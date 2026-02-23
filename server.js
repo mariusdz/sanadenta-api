@@ -11,114 +11,67 @@ app.use(bodyParser.json({ limit: "1mb" }));
 // ===== ENV =====
 const PORT = process.env.PORT || 3000;
 
-// Calendar settings
 const CALENDAR_ID =
   process.env.CALENDAR_ID ||
   "10749b71d8c90e5386ee005cfbb1e2f88ab28329d7dfab9b4fe6281528af92e6@group.calendar.google.com";
+
 const TIME_ZONE = process.env.TIME_ZONE || "Europe/Vilnius";
-
-// Simple auth for your API
 const API_KEY = process.env.API_KEY;
-
-// Service Account JSON stored as env var
 const SERVICE_ACCOUNT_JSON = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
 
-// ===== Helpers: rules =====
-function isWeekdayAllowed(dateObj) {
-  // dateObj is a Luxon DateTime or JS Date; we'll use Luxon in this file
-  const d = dateObj.weekday; // 1=Mon ... 7=Sun
-  return d === 1 || d === 4 || d === 5; // Mon, Thu, Fri
-}
-
-function getLastMondayOfMonthLuxon(dt) {
-  // dt is Luxon DateTime in TIME_ZONE
-  const lastDay = dt.endOf("month"); // last moment of month
-  // Move back to Monday
-  const diff = (lastDay.weekday - 1 + 7) % 7; // 0..6
-  return lastDay.minus({ days: diff }).startOf("day");
-}
-
-function isSurgeonDayLuxon(dayStart) {
-  // last Monday of the month
-  const lastMon = getLastMondayOfMonthLuxon(dayStart);
-  return (
-    dayStart.year === lastMon.year &&
-    dayStart.month === lastMon.month &&
-    dayStart.day === lastMon.day
-  );
-}
-
+// ===== Helpers =====
 function pad2(n) {
   return String(n).padStart(2, "0");
-}
-
-// Build Luxon DateTime in clinic TZ from date + time (local wall clock time)
-function dtInClinicTZ(dateStrYYYYMMDD, hhmm) {
-  // Example: DateTime.fromISO("2026-02-26T12:00", { zone: "Europe/Vilnius" })
-  return DateTime.fromISO(`${dateStrYYYYMMDD}T${hhmm}`, { zone: TIME_ZONE });
 }
 
 function overlaps(aStart, aEnd, bStart, bEnd) {
   return aStart < bEnd && aEnd > bStart;
 }
 
-function generateDaySlots(startHHMM, endHHMM, stepMinutes, durationMinutes) {
+function isWeekdayAllowed(dt) {
+  return dt.weekday === 1 || dt.weekday === 4 || dt.weekday === 5;
+}
+
+function getLastMondayOfMonth(dt) {
+  const lastDay = dt.endOf("month");
+  const diff = (lastDay.weekday - 1 + 7) % 7;
+  return lastDay.minus({ days: diff }).startOf("day");
+}
+
+function isSurgeonDay(dt) {
+  const lastMon = getLastMondayOfMonth(dt);
+  return dt.hasSame(lastMon, "day");
+}
+
+function generateSlots(startHHMM, endHHMM, stepMinutes, durationMinutes) {
   const [sh, sm] = startHHMM.split(":").map(Number);
   const [eh, em] = endHHMM.split(":").map(Number);
 
   const startTotal = sh * 60 + sm;
   const endTotal = eh * 60 + em;
-
   const latestStart = endTotal - durationMinutes;
+
   const slots = [];
   for (let t = startTotal; t <= latestStart; t += stepMinutes) {
-    const hh = Math.floor(t / 60);
-    const mm = t % 60;
-    slots.push(`${pad2(hh)}:${pad2(mm)}`);
+    slots.push(`${pad2(Math.floor(t / 60))}:${pad2(t % 60)}`);
   }
   return slots;
 }
 
-async function getBusyRanges(calendar, timeMinISO, timeMaxISO) {
-  const fb = await calendar.freebusy.query({
-    requestBody: {
-      timeMin: timeMinISO,
-      timeMax: timeMaxISO,
-      timeZone: TIME_ZONE,
-      items: [{ id: CALENDAR_ID }],
-    },
-  });
-
-  const busy = fb.data.calendars?.[CALENDAR_ID]?.busy || [];
-
-  // Important: busy start/end are ISO with timezone; Date() parses correctly.
-  return busy.map((b) => ({
-    start: new Date(b.start),
-    end: new Date(b.end),
-  }));
+function dtLocal(date, time) {
+  return DateTime.fromISO(`${date}T${time}`, { zone: TIME_ZONE });
 }
 
-// ===== Auth =====
 function requireApiKey(req, res, next) {
   if (!API_KEY) return next();
-  const incoming = req.header("x-api-key");
-  if (!incoming || incoming !== API_KEY) {
+  if (req.header("x-api-key") !== API_KEY) {
     return res.status(401).json({ error: "Unauthorized" });
   }
   next();
 }
 
 function getAuth() {
-  if (!SERVICE_ACCOUNT_JSON) {
-    throw new Error("Missing GOOGLE_SERVICE_ACCOUNT_JSON env var");
-  }
-  let creds;
-  try {
-    creds = JSON.parse(SERVICE_ACCOUNT_JSON);
-  } catch {
-    throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON");
-  }
-
+  const creds = JSON.parse(SERVICE_ACCOUNT_JSON);
   return new google.auth.JWT({
     email: creds.client_email,
     key: creds.private_key,
@@ -126,124 +79,100 @@ function getAuth() {
   });
 }
 
+async function getBusy(calendar, timeMin, timeMax) {
+  const fb = await calendar.freebusy.query({
+    requestBody: {
+      timeMin,
+      timeMax,
+      timeZone: TIME_ZONE,
+      items: [{ id: CALENDAR_ID }],
+    },
+  });
+
+  return (fb.data.calendars?.[CALENDAR_ID]?.busy || []).map((b) => ({
+    start: new Date(b.start),
+    end: new Date(b.end),
+  }));
+}
+
 // ===== ROUTES =====
 app.get("/", (req, res) =>
-  res.send("Sanadenta API is running. Use /health, /free-slots, /create-booking")
+  res.send("Sanadenta API is running")
 );
 
-app.get("/health", (req, res) => res.json({ ok: true }));
+app.get("/health", (req, res) =>
+  res.json({ ok: true })
+);
 
-/**
- * GET /free-slots?date=YYYY-MM-DD&service=Konsultacija
- * OR  /free-slots?date=YYYY-MM-DD&durationMinutes=30
- */
 app.get("/free-slots", requireApiKey, async (req, res) => {
   try {
-    const date = String(req.query.date || "").trim(); // YYYY-MM-DD
-    const service = req.query.service ? String(req.query.service).trim() : undefined;
-    const durationMinutesRaw = req.query.durationMinutes;
+    const date = req.query.date;
+    const service = req.query.service;
+    const durationRaw = req.query.durationMinutes;
 
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      return res.status(400).json({ error: "Invalid date. Use YYYY-MM-DD" });
+      return res.status(400).json({ error: "Invalid date" });
     }
 
-    // Service durations (turi atitikti tavo front-end select values)
     const SERVICE_DURATIONS = {
       Konsultacija: 15,
       "Trumpas vizitas": 30,
       Vizitas: 60,
     };
 
-    let durationMinutes = 60;
-    let durationSource = "default";
-
+    let duration = 60;
     if (service && SERVICE_DURATIONS[service]) {
-      durationMinutes = SERVICE_DURATIONS[service];
-      durationSource = "service";
-    } else if (durationMinutesRaw !== undefined) {
-      const n = Number(durationMinutesRaw);
-      if (!Number.isFinite(n) || n <= 0 || n > 240) {
-        return res.status(400).json({ error: "Invalid durationMinutes" });
-      }
-      durationMinutes = n;
-      durationSource = "durationMinutes";
+      duration = SERVICE_DURATIONS[service];
+    } else if (durationRaw) {
+      duration = Number(durationRaw);
     }
 
-    // Build day start in clinic TZ
     const dayStart = DateTime.fromISO(date, { zone: TIME_ZONE }).startOf("day");
 
-    // Rules: allowed weekdays only
     if (!isWeekdayAllowed(dayStart)) {
-      return res.json({
-        ok: true,
-        date,
-        allowed: false,
-        reason: "Clinic does not work this day (allowed: Mon/Thu/Fri).",
-        service: service || null,
-        durationMinutes,
-        durationSource,
-        slots: [],
-      });
+      return res.json({ ok: true, allowed: false, slots: [] });
     }
 
-    // Rule: last Monday of month = surgeon day (bot must not self-book)
-    if (isSurgeonDayLuxon(dayStart)) {
-      return res.json({
-        ok: true,
-        date,
-        allowed: false,
-        reason: "Surgeon day (manual scheduling via administrator).",
-        service: service || null,
-        durationMinutes,
-        durationSource,
-        slots: [],
-      });
+    if (isSurgeonDay(dayStart)) {
+      return res.json({ ok: true, allowed: false, slots: [] });
     }
 
-    // Working hours
     const WORK_START = "08:00";
     const WORK_END = "17:00";
-    const STEP = 15; // always 15-minute grid
+    const STEP = 15;
 
-    const candidateSlots = generateDaySlots(WORK_START, WORK_END, STEP, durationMinutes);
+    const slots = generateSlots(WORK_START, WORK_END, STEP, duration);
 
     const auth = getAuth();
     const calendar = google.calendar({ version: "v3", auth });
 
-    // timeMin/timeMax for that day in clinic TZ, then convert to ISO (UTC)
-    const timeMin = dayStart.toUTC().toISO();
-    const timeMax = dayStart.plus({ days: 1 }).toUTC().toISO();
+    const timeMin = dayStart.toFormat("yyyy-MM-dd'T'HH:mm:ss");
+    const timeMax = dayStart.plus({ days: 1 }).toFormat("yyyy-MM-dd'T'HH:mm:ss");
 
-    const busyRanges = await getBusyRanges(calendar, timeMin, timeMax);
+    const busy = await getBusy(calendar, timeMin, timeMax);
 
-    const freeSlots = candidateSlots.filter((hhmm) => {
-      const startDT = dtInClinicTZ(date, hhmm);
-      const endDT = startDT.plus({ minutes: durationMinutes });
+    const free = slots.filter((t) => {
+      const start = dtLocal(date, t);
+      const end = start.plus({ minutes: duration });
 
-      // Compare in UTC using JS Date (stable)
-      const start = new Date(startDT.toUTC().toISO());
-      const end = new Date(endDT.toUTC().toISO());
+      const s = new Date(start.toUTC().toISO());
+      const e = new Date(end.toUTC().toISO());
 
-      for (const b of busyRanges) {
-        if (overlaps(start, end, b.start, b.end)) return false;
-      }
-      return true;
+      return !busy.some((b) => overlaps(s, e, b.start, b.end));
     });
 
-    return res.json({
+    res.json({
       ok: true,
-      date,
       allowed: true,
-      service: service || null,
-      durationMinutes,
-      durationSource,
+      date,
+      durationMinutes: duration,
       stepMinutes: STEP,
-      workHours: { start: WORK_START, end: WORK_END },
-      slots: freeSlots,
+      slots: free,
     });
+
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: "Server error", details: String(err.message || err) });
+    res.status(500).json({ error: "Server error" });
   }
 });
 
@@ -252,62 +181,52 @@ app.post("/create-booking", requireApiKey, async (req, res) => {
     const { name, phone, date, time, durationMinutes, service = "Vizitas" } = req.body;
 
     if (!name || !phone || !date || !time) {
-      return res.status(400).json({ error: "Missing required fields: name, phone, date, time" });
-    }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
-      return res.status(400).json({ error: "Invalid date format. Use YYYY-MM-DD" });
-    }
-    if (!/^\d{2}:\d{2}$/.test(String(time))) {
-      return res.status(400).json({ error: "Invalid time format. Use HH:MM" });
+      return res.status(400).json({ error: "Missing fields" });
     }
 
-    const dur = Number(durationMinutes || 60);
-    if (!Number.isFinite(dur) || dur <= 0 || dur > 240) {
-      return res.status(400).json({ error: "Invalid durationMinutes" });
-    }
-
-    // Create start/end in clinic TZ, then send to Google with offset
-    const startDT = dtInClinicTZ(date, time);
-    if (!startDT.isValid) {
-      return res.status(400).json({ error: "Invalid date/time" });
-    }
-    const endDT = startDT.plus({ minutes: dur });
+    const duration = Number(durationMinutes || 60);
+    const startDT = dtLocal(date, time);
+    const endDT = startDT.plus({ minutes: duration });
 
     const auth = getAuth();
     const calendar = google.calendar({ version: "v3", auth });
 
-    // 1) Check duplicates/overlaps using freebusy for exact range
-    const fbMin = startDT.toUTC().toISO();
-    const fbMax = endDT.toUTC().toISO();
-    const busyRanges = await getBusyRanges(calendar, fbMin, fbMax);
+    // Check conflict
+    const fbMin = startDT.toFormat("yyyy-MM-dd'T'HH:mm:ss");
+    const fbMax = endDT.toFormat("yyyy-MM-dd'T'HH:mm:ss");
 
-    const start = new Date(startDT.toUTC().toISO());
-    const end = new Date(endDT.toUTC().toISO());
-    const conflict = busyRanges.some((b) => overlaps(start, end, b.start, b.end));
+    const busy = await getBusy(calendar, fbMin, fbMax);
 
-    if (conflict) {
-      return res.status(409).json({ error: "Time slot is already booked" });
+    const s = new Date(startDT.toUTC().toISO());
+    const e = new Date(endDT.toUTC().toISO());
+
+    if (busy.some((b) => overlaps(s, e, b.start, b.end))) {
+      return res.status(409).json({ error: "Time slot already booked" });
     }
 
-    // 2) Insert event (use ISO with offset, not toISOString())
+    // Insert with floating local time
+    const startLocal = startDT.toFormat("yyyy-MM-dd'T'HH:mm:ss");
+    const endLocal = endDT.toFormat("yyyy-MM-dd'T'HH:mm:ss");
+
     const event = await calendar.events.insert({
       calendarId: CALENDAR_ID,
       requestBody: {
         summary: `Sanadenta — ${service} — ${name}`,
-        description: `Pacientas: ${name}\nTelefonas: ${phone}\nPaslauga: ${service}\nSukurta per web registraciją.`,
-        start: { dateTime: startDT.toISO(), timeZone: TIME_ZONE },
-        end: { dateTime: endDT.toISO(), timeZone: TIME_ZONE },
+        description: `Pacientas: ${name}\nTelefonas: ${phone}`,
+        start: { dateTime: startLocal, timeZone: TIME_ZONE },
+        end: { dateTime: endLocal, timeZone: TIME_ZONE },
       },
     });
 
-    return res.json({
+    res.json({
       success: true,
       eventId: event.data.id,
       reservedUntil: endDT.toFormat("HH:mm"),
     });
+
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: "Server error", details: String(err.message || err) });
+    res.status(500).json({ error: "Server error" });
   }
 });
 

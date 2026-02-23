@@ -75,13 +75,31 @@ function requireApiKey(req, res, next) {
 }
 
 function getAuth() {
-  const creds = JSON.parse(SERVICE_ACCOUNT_JSON);
+  if (!SERVICE_ACCOUNT_JSON) {
+    throw new Error("Missing GOOGLE_SERVICE_ACCOUNT_JSON env var on Render");
+  }
+
+  let creds;
+  try {
+    creds = JSON.parse(SERVICE_ACCOUNT_JSON);
+  } catch (e) {
+    throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON");
+  }
+
+  if (!creds.client_email || !creds.private_key) {
+    throw new Error("Service account JSON missing client_email/private_key");
+  }
+
+  // ✅ Critical fix: Render env often stores newlines as \\n
+  const fixedKey = String(creds.private_key).replace(/\\n/g, "\n");
+
   return new google.auth.JWT({
     email: creds.client_email,
-    key: creds.private_key,
+    key: fixedKey,
     scopes: ["https://www.googleapis.com/auth/calendar"],
   });
 }
+
 
 async function getBusy(calendar, timeMin, timeMax) {
   const fb = await calendar.freebusy.query({
@@ -175,9 +193,9 @@ app.get("/free-slots", requireApiKey, async (req, res) => {
     });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
+  console.error("FREE-SLOTS ERROR:", err);
+  return res.status(500).json({ error: "Server error", details: String(err.message || err) });
+}
 });
 
 app.post("/create-booking", requireApiKey, async (req, res) => {
@@ -228,9 +246,9 @@ app.post("/create-booking", requireApiKey, async (req, res) => {
     });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
+  console.error("CREATE-BOOKING ERROR:", err);
+  return res.status(500).json({ error: "Server error", details: String(err.message || err) });
+}
 });
 
 app.listen(PORT, () => {

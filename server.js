@@ -59,7 +59,11 @@ function generateSlots(startHHMM, endHHMM, stepMinutes, durationMinutes) {
 }
 
 function dtLocal(date, time) {
-  return DateTime.fromISO(`${date}T${time}`, { zone: TIME_ZONE });
+  // Force Europe/Vilnius zone even if server runs in UTC
+  const dt = DateTime.fromFormat(`${date} ${time}`, "yyyy-MM-dd HH:mm", {
+    zone: TIME_ZONE,
+  });
+  return dt.setZone(TIME_ZONE, { keepLocalTime: true });
 }
 
 function requireApiKey(req, res, next) {
@@ -204,9 +208,8 @@ app.post("/create-booking", requireApiKey, async (req, res) => {
       return res.status(409).json({ error: "Time slot already booked" });
     }
 
-    // Insert with floating local time
-    const startLocal = startDT.toFormat("yyyy-MM-dd'T'HH:mm:ss");
-    const endLocal = endDT.toFormat("yyyy-MM-dd'T'HH:mm:ss");
+    console.log("DEBUG startDT:", startDT.toString(), "ISO:", startDT.toISO());
+    console.log("DEBUG zone:", startDT.zoneName, "offset:", startDT.offset);
 
     const event = await calendar.events.insert({
       calendarId: CALENDAR_ID,
@@ -214,8 +217,8 @@ app.post("/create-booking", requireApiKey, async (req, res) => {
         summary: `Sanadenta — ${service} — ${name}`,
         description: `Pacientas: ${name}\nTelefonas: ${phone}`,
         start: { dateTime: startDT.toISO(), timeZone: TIME_ZONE },
-end: { dateTime: endDT.toISO(), timeZone: TIME_ZONE },
-      
+        end: { dateTime: endDT.toISO(), timeZone: TIME_ZONE },
+      },
     });
 
     res.json({

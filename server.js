@@ -213,9 +213,9 @@ app.post("/create-booking", requireApiKey, async (req, res) => {
       requestBody: {
         summary: `Sanadenta — ${service} — ${name}`,
         description: `Pacientas: ${name}\nTelefonas: ${phone}`,
-        start: { dateTime: startLocal, timeZone: TIME_ZONE },
-        end: { dateTime: endLocal, timeZone: TIME_ZONE },
-      },
+        start: { dateTime: startDT.toISO(), timeZone: TIME_ZONE },
+end: { dateTime: endDT.toISO(), timeZone: TIME_ZONE },
+      
     });
 
     res.json({

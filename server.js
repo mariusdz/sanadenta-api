@@ -8,47 +8,54 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json({ limit: "1mb" }));
 
-// ===== ENV =====
+// ===== KONFIGŪRACIJA =====
 const PORT = process.env.PORT || 3000;
-
-const CALENDAR_ID =
-  process.env.CALENDAR_ID ||
-  "10749b71d8c90e5386ee005cfbb1e2f88ab28329d7dfab9b4fe6281528af92e6@group.calendar.google.com";
-
 const TIME_ZONE = process.env.TIME_ZONE || "Europe/Vilnius";
 const API_KEY = process.env.API_KEY;
-const SERVICE_ACCOUNT_JSON = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
 
-// ===== Helpers =====
-function pad2(n) {
-  return String(n).padStart(2, "0");
-}
+const CALENDAR_ID = process.env.CALENDAR_ID || 
+  "10749b71d8c90e5386ee005cfbb1e2f88ab28329d7dfab9b4fe6281528af92e6@group.calendar.google.com";
 
-function overlaps(aStart, aEnd, bStart, bEnd) {
-  return aStart < bEnd && aEnd > bStart;
-}
+// Darbo laikas
+const WORK_HOURS = {
+  start: "08:00",
+  end: "17:00",
+  stepMinutes: 15
+};
 
-function isWeekdayAllowed(dt) {
-  return dt.weekday === 1 || dt.weekday === 4 || dt.weekday === 5;
-}
+// Paslaugų trukmės
+const SERVICE_DURATIONS = {
+  Konsultacija: 15,
+  "Trumpas vizitas": 30,
+  Vizitas: 60
+};
 
-function getLastMondayOfMonth(dt) {
+// ===== HELPER FUNKCIJOS =====
+const pad2 = (n) => String(n).padStart(2, "0");
+
+const isValidDate = (date) => /^\d{4}-\d{2}-\d{2}$/.test(date);
+
+const overlaps = (aStart, aEnd, bStart, bEnd) => aStart < bEnd && aEnd > bStart;
+
+const isWeekdayAllowed = (dt) => [1, 4, 5].includes(dt.weekday); // Pirmadienis, Ketvirtadienis, Penktadienis
+
+const getLastMondayOfMonth = (dt) => {
   const lastDay = dt.endOf("month");
   const diff = (lastDay.weekday - 1 + 7) % 7;
   return lastDay.minus({ days: diff }).startOf("day");
-}
+};
 
-function isSurgeonDay(dt) {
+const isSurgeonDay = (dt) => {
   const lastMon = getLastMondayOfMonth(dt);
   return dt.hasSame(lastMon, "day");
-}
+};
 
-function generateSlots(startHHMM, endHHMM, stepMinutes, durationMinutes) {
-  const [sh, sm] = startHHMM.split(":").map(Number);
-  const [eh, em] = endHHMM.split(":").map(Number);
-
-  const startTotal = sh * 60 + sm;
-  const endTotal = eh * 60 + em;
+const generateSlots = (startHHMM, endHHMM, stepMinutes, durationMinutes) => {
+  const [startHour, startMin] = startHHMM.split(":").map(Number);
+  const [endHour, endMin] = endHHMM.split(":").map(Number);
+  
+  const startTotal = startHour * 60 + startMin;
+  const endTotal = endHour * 60 + endMin;
   const latestStart = endTotal - durationMinutes;
 
   const slots = [];
@@ -56,203 +63,271 @@ function generateSlots(startHHMM, endHHMM, stepMinutes, durationMinutes) {
     slots.push(`${pad2(Math.floor(t / 60))}:${pad2(t % 60)}`);
   }
   return slots;
-}
+};
 
-function dtLocal(date, time) {
-  // Force Europe/Vilnius zone even if server runs in UTC
-  const dt = DateTime.fromFormat(`${date} ${time}`, "yyyy-MM-dd HH:mm", {
-    zone: TIME_ZONE,
-  });
-  return dt.setZone(TIME_ZONE, { keepLocalTime: true });
-}
+const dtLocal = (date, time) => {
+  return DateTime.fromFormat(`${date} ${time}`, "yyyy-MM-dd HH:mm", { zone: TIME_ZONE })
+    .setZone(TIME_ZONE, { keepLocalTime: true });
+};
 
-function requireApiKey(req, res, next) {
+// ===== AUTENTIFIKACIJA =====
+const requireApiKey = (req, res, next) => {
   if (!API_KEY) return next();
   if (req.header("x-api-key") !== API_KEY) {
     return res.status(401).json({ error: "Unauthorized" });
   }
   next();
-}
+};
 
-function getAuth() {
-  if (!SERVICE_ACCOUNT_JSON) {
-    throw new Error("Missing GOOGLE_SERVICE_ACCOUNT_JSON env var on Render");
+const getAuth = () => {
+  const serviceAccountJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (!serviceAccountJson) {
+    throw new Error("Missing GOOGLE_SERVICE_ACCOUNT_JSON environment variable");
   }
 
-  let creds;
   try {
-    creds = JSON.parse(SERVICE_ACCOUNT_JSON);
-  } catch (e) {
-    throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON");
+    const creds = JSON.parse(serviceAccountJson);
+    
+    if (!creds.client_email || !creds.private_key) {
+      throw new Error("Service account JSON missing client_email or private_key");
+    }
+
+    // Render specifika - pataisome newlines
+    const fixedKey = String(creds.private_key).replace(/\\n/g, "\n");
+
+    return new google.auth.JWT({
+      email: creds.client_email,
+      key: fixedKey,
+      scopes: ["https://www.googleapis.com/auth/calendar"]
+    });
+  } catch (error) {
+    throw new Error(`Invalid service account JSON: ${error.message}`);
   }
+};
 
-  if (!creds.client_email || !creds.private_key) {
-    throw new Error("Service account JSON missing client_email/private_key");
+const getCalendarClient = () => {
+  try {
+    const auth = getAuth();
+    return google.calendar({ version: "v3", auth });
+  } catch (error) {
+    throw new Error(`Failed to initialize calendar client: ${error.message}`);
   }
+};
 
-  // ✅ Critical fix: Render env often stores newlines as \\n
-  const fixedKey = String(creds.private_key).replace(/\\n/g, "\n");
+const getBusySlots = async (calendar, timeMin, timeMax) => {
+  try {
+    const response = await calendar.freebusy.query({
+      requestBody: {
+        timeMin,
+        timeMax,
+        timeZone: TIME_ZONE,
+        items: [{ id: CALENDAR_ID }]
+      }
+    });
 
-  return new google.auth.JWT({
-    email: creds.client_email,
-    key: fixedKey,
-    scopes: ["https://www.googleapis.com/auth/calendar"],
-  });
-}
+    return (response.data.calendars?.[CALENDAR_ID]?.busy || []).map(b => ({
+      start: new Date(b.start),
+      end: new Date(b.end)
+    }));
+  } catch (error) {
+    console.error("FreeBusy API error:", error);
+    throw new Error("Failed to fetch busy slots");
+  }
+};
 
-
-async function getBusy(calendar, timeMin, timeMax) {
-  const fb = await calendar.freebusy.query({
-    requestBody: {
-      timeMin,
-      timeMax,
-      timeZone: TIME_ZONE,
-      items: [{ id: CALENDAR_ID }],
-    },
-  });
-
-  return (fb.data.calendars?.[CALENDAR_ID]?.busy || []).map((b) => ({
-    start: new Date(b.start),
-    end: new Date(b.end),
-  }));
-}
+const checkTimeSlotAvailable = async (calendar, startDT, endDT) => {
+  const busy = await getBusySlots(calendar, startDT.toISO(), endDT.toISO());
+  
+  const start = new Date(startDT.toUTC().toISO());
+  const end = new Date(endDT.toUTC().toISO());
+  
+  return !busy.some(b => overlaps(start, end, b.start, b.end));
+};
 
 // ===== ROUTES =====
-app.get("/", (req, res) =>
-  res.send("Sanadenta API is running")
-);
-
-app.get("/health", (req, res) =>
-  res.json({ ok: true })
-);
+app.get("/", (req, res) => res.send("Sanadenta API is running"));
+app.get("/health", (req, res) => res.json({ ok: true, timestamp: new Date().toISOString() }));
 
 app.get("/free-slots", requireApiKey, async (req, res) => {
   try {
-    const date = req.query.date;
-    const service = req.query.service;
-    const durationRaw = req.query.durationMinutes;
+    const { date, service, durationMinutes } = req.query;
 
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      return res.status(400).json({ error: "Invalid date" });
+    // Validacija
+    if (!isValidDate(date)) {
+      return res.status(400).json({ error: "Invalid date format. Use YYYY-MM-DD" });
     }
 
-    const SERVICE_DURATIONS = {
-      Konsultacija: 15,
-      "Trumpas vizitas": 30,
-      Vizitas: 60,
-    };
-
+    // Nustatome trukmę
     let duration = 60;
     if (service && SERVICE_DURATIONS[service]) {
       duration = SERVICE_DURATIONS[service];
-    } else if (durationRaw) {
-      duration = Number(durationRaw);
+    } else if (durationMinutes) {
+      duration = Number(durationMinutes);
+      if (isNaN(duration) || duration <= 0) {
+        return res.status(400).json({ error: "Invalid durationMinutes" });
+      }
     }
 
     const dayStart = DateTime.fromISO(date, { zone: TIME_ZONE }).startOf("day");
 
-    if (!isWeekdayAllowed(dayStart)) {
-      return res.json({ ok: true, allowed: false, slots: [] });
+    // Ar diena leistina?
+    if (!isWeekdayAllowed(dayStart) || isSurgeonDay(dayStart)) {
+      return res.json({ 
+        ok: true, 
+        allowed: false, 
+        slots: [],
+        message: "No appointments available on this date"
+      });
     }
 
-    if (isSurgeonDay(dayStart)) {
-      return res.json({ ok: true, allowed: false, slots: [] });
-    }
+    // Generuojame laiko tarpus
+    const allSlots = generateSlots(
+      WORK_HOURS.start, 
+      WORK_HOURS.end, 
+      WORK_HOURS.stepMinutes, 
+      duration
+    );
 
-    const WORK_START = "08:00";
-    const WORK_END = "17:00";
-    const STEP = 15;
-
-    const slots = generateSlots(WORK_START, WORK_END, STEP, duration);
-
-    const auth = getAuth();
-    const calendar = google.calendar({ version: "v3", auth });
-
-    const timeMin = dayStart.toISO(); // pvz. 2026-02-26T00:00:00.000+02:00
+    // Tikriname užimtumą
+    const calendar = getCalendarClient();
+    const timeMin = dayStart.toISO();
     const timeMax = dayStart.plus({ days: 1 }).toISO();
+    
+    const busySlots = await getBusySlots(calendar, timeMin, timeMax);
 
-    const busy = await getBusy(calendar, timeMin, timeMax);
-
-    const free = slots.filter((t) => {
-      const start = dtLocal(date, t);
+    const freeSlots = allSlots.filter(timeSlot => {
+      const start = dtLocal(date, timeSlot);
       const end = start.plus({ minutes: duration });
 
-      const s = new Date(start.toUTC().toISO());
-      const e = new Date(end.toUTC().toISO());
+      const startDate = new Date(start.toUTC().toISO());
+      const endDate = new Date(end.toUTC().toISO());
 
-      return !busy.some((b) => overlaps(s, e, b.start, b.end));
+      return !busySlots.some(busy => overlaps(startDate, endDate, busy.start, busy.end));
     });
 
-    res.json({
+    return res.json({
       ok: true,
       allowed: true,
       date,
       durationMinutes: duration,
-      stepMinutes: STEP,
-      slots: free,
+      stepMinutes: WORK_HOURS.stepMinutes,
+      slots: freeSlots,
+      totalSlots: freeSlots.length
     });
 
-  } catch (err) {
-  console.error("FREE-SLOTS ERROR:", err);
-  return res.status(500).json({ error: "Server error", details: String(err.message || err) });
-}
+  } catch (error) {
+    console.error("FREE-SLOTS ERROR:", error);
+    return res.status(500).json({ 
+      error: "Server error", 
+      message: error.message,
+      ...(process.env.NODE_ENV === "development" && { stack: error.stack })
+    });
+  }
 });
 
 app.post("/create-booking", requireApiKey, async (req, res) => {
   try {
     const { name, phone, date, time, durationMinutes, service = "Vizitas" } = req.body;
 
-    if (!name || !phone || !date || !time) {
-      return res.status(400).json({ error: "Missing fields" });
+    // Validacija
+    if (!name?.trim() || !phone?.trim() || !date || !time) {
+      return res.status(400).json({ 
+        error: "Missing required fields",
+        required: ["name", "phone", "date", "time"]
+      });
     }
 
-    const duration = Number(durationMinutes || 60);
+    if (!isValidDate(date)) {
+      return res.status(400).json({ error: "Invalid date format" });
+    }
+
+    const duration = Number(durationMinutes || SERVICE_DURATIONS[service] || 60);
     const startDT = dtLocal(date, time);
     const endDT = startDT.plus({ minutes: duration });
 
-    const auth = getAuth();
-    const calendar = google.calendar({ version: "v3", auth });
-
-    // Check conflict
-    const fbMin = startDT.toISO();
-    const fbMax = endDT.toISO();
-
-    const busy = await getBusy(calendar, fbMin, fbMax);
-
-    const s = new Date(startDT.toUTC().toISO());
-    const e = new Date(endDT.toUTC().toISO());
-
-    if (busy.some((b) => overlaps(s, e, b.start, b.end))) {
-      return res.status(409).json({ error: "Time slot already booked" });
+    // Patikriname ar data ateityje
+    if (startDT < DateTime.now().setZone(TIME_ZONE)) {
+      return res.status(400).json({ error: "Cannot book appointments in the past" });
     }
 
-    console.log("DEBUG startDT:", startDT.toString(), "ISO:", startDT.toISO());
-    console.log("DEBUG zone:", startDT.zoneName, "offset:", startDT.offset);
+    // Tikriname ar laisvas laikas
+    const calendar = getCalendarClient();
+    const isAvailable = await checkTimeSlotAvailable(calendar, startDT, endDT);
+    
+    if (!isAvailable) {
+      return res.status(409).json({ 
+        error: "Time slot already booked",
+        message: "Selected time is no longer available"
+      });
+    }
 
+    // Kuriame įvykį
     const event = await calendar.events.insert({
       calendarId: CALENDAR_ID,
       requestBody: {
         summary: `Sanadenta — ${service} — ${name}`,
-        description: `Pacientas: ${name}\nTelefonas: ${phone}`,
-        start: { dateTime: startDT.toISO(), timeZone: TIME_ZONE },
-        end: { dateTime: endDT.toISO(), timeZone: TIME_ZONE },
-      },
+        description: `Pacientas: ${name}\nTelefonas: ${phone}\nService: ${service}`,
+        start: { 
+          dateTime: startDT.toISO(), 
+          timeZone: TIME_ZONE 
+        },
+        end: { 
+          dateTime: endDT.toISO(), 
+          timeZone: TIME_ZONE 
+        },
+        attendees: [{ email: phone, displayName: name }], // Optional
+        reminders: {
+          useDefault: true
+        }
+      }
     });
 
-    res.json({
+    return res.json({
       success: true,
       eventId: event.data.id,
+      eventLink: event.data.htmlLink,
       reservedUntil: endDT.toFormat("HH:mm"),
+      date: startDT.toFormat("yyyy-MM-dd"),
+      time: startDT.toFormat("HH:mm"),
+      service,
+      duration
     });
 
-  } catch (err) {
-  console.error("FREE-SLOTS ERROR:", err?.response?.data || err);
-  return res
-    .status(500)
-    .json({ error: "Server error", details: String(err?.response?.data?.error?.message || err.message || err) });
-}
+  } catch (error) {
+    console.error("CREATE-BOOKING ERROR:", error);
+    
+    // Google API specifinės klaidos
+    if (error.response?.data?.error) {
+      return res.status(error.response.status || 500).json({
+        error: "Google Calendar API error",
+        details: error.response.data.error.message
+      });
+    }
+
+    return res.status(500).json({ 
+      error: "Server error", 
+      message: error.message,
+      ...(process.env.NODE_ENV === "development" && { stack: error.stack })
+    });
+  }
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ error: "Route not found" });
+});
+
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error("Unhandled error:", err);
+  res.status(500).json({ 
+    error: "Internal server error",
+    message: process.env.NODE_ENV === "development" ? err.message : undefined
+  });
 });
 
 app.listen(PORT, () => {
   console.log(`Sanadenta API running on port ${PORT}`);
+  console.log(`Timezone: ${TIME_ZONE}`);
+  console.log(`Calendar ID: ${CALENDAR_ID.substring(0, 20)}...`);
 });

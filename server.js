@@ -168,8 +168,8 @@ app.get("/free-slots", requireApiKey, async (req, res) => {
     const auth = getAuth();
     const calendar = google.calendar({ version: "v3", auth });
 
-    const timeMin = dayStart.toFormat("yyyy-MM-dd'T'HH:mm:ss");
-    const timeMax = dayStart.plus({ days: 1 }).toFormat("yyyy-MM-dd'T'HH:mm:ss");
+    const timeMin = dayStart.toISO(); // pvz. 2026-02-26T00:00:00.000+02:00
+    const timeMax = dayStart.plus({ days: 1 }).toISO();
 
     const busy = await getBusy(calendar, timeMin, timeMax);
 
@@ -214,8 +214,8 @@ app.post("/create-booking", requireApiKey, async (req, res) => {
     const calendar = google.calendar({ version: "v3", auth });
 
     // Check conflict
-    const fbMin = startDT.toFormat("yyyy-MM-dd'T'HH:mm:ss");
-    const fbMax = endDT.toFormat("yyyy-MM-dd'T'HH:mm:ss");
+    const fbMin = startDT.toISO();
+    const fbMax = endDT.toISO();
 
     const busy = await getBusy(calendar, fbMin, fbMax);
 
@@ -246,8 +246,10 @@ app.post("/create-booking", requireApiKey, async (req, res) => {
     });
 
   } catch (err) {
-  console.error("CREATE-BOOKING ERROR:", err);
-  return res.status(500).json({ error: "Server error", details: String(err.message || err) });
+  console.error("FREE-SLOTS ERROR:", err?.response?.data || err);
+  return res
+    .status(500)
+    .json({ error: "Server error", details: String(err?.response?.data?.error?.message || err.message || err) });
 }
 });
 

@@ -8,20 +8,6 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json({ limit: "1mb" }));
 
-// ===== INFOBIP - AUKŠČIAUSIAS PRIORITETAS =====
-app.post("/infobip/call-received", (req, res) => {
-  console.log("🚀 GAunu skambutį (VIP prioritetas)!");
-  console.log("Body:", JSON.stringify(req.body, null, 2));
-  
-  res.json({
-    action: {
-      name: "say",
-      text: "Sveiki, čia Sanadenta.",
-      language: "lt"
-    }
-  });
-});
-
 // ===== KONFIGŪRACIJA =====
 const PORT = process.env.PORT || 3000;
 const TIME_ZONE = process.env.TIME_ZONE || "Europe/Vilnius";
@@ -223,6 +209,18 @@ const getBusySlots = async (calendar, timeMin, timeMax) => {
   }
 };
 
+// ===== INFOBIP - AUKŠČIAUSIAS PRIORITETAS =====
+app.post("/infobip/call-received", (req, res) => {
+  console.log("🚀 GAunu skambutį (VIP)!");
+  console.log("Body:", JSON.stringify(req.body, null, 2));
+  res.json({
+    action: {
+      name: "say",
+      text: "Sveiki, čia Sanadenta.",
+      language: "lt"
+    }
+  });
+});
 
 // ===== ROUTES =====
 app.get("/", (req, res) => res.json({ 

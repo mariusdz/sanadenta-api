@@ -469,6 +469,44 @@ if (process.env.NODE_ENV !== "production") {
   });
 }
 
+// ===== INFOBIP CALLS API – INBOUND IVR =====
+app.post("/infobip/call-received", async (req, res) => {
+  try {
+    console.log("📞 Incoming call event from Infobip:");
+    console.log(JSON.stringify(req.body, null, 2));
+
+    const body = req.body;
+
+    // Jei tai pirmas skambučio eventas (Call received)
+    if (body.eventType === "CALL_RECEIVED") {
+      return res.json({
+        action: {
+          name: "say",
+          text: "Sveiki, čia Sanadenta. Testuojame automatinę registracijos sistemą.",
+          language: "lt"
+        }
+      });
+    }
+
+    // Jei nėra eventType – vis tiek atsakom testu
+    return res.json({
+      action: {
+        name: "say",
+        text: "Sanadenta sistema veikia.",
+        language: "lt"
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Infobip IVR error:", error);
+    return res.status(500).json({
+      action: {
+        name: "hangup"
+      }
+    });
+  }
+});
+
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({ error: "Route not found" });

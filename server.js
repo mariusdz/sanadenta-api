@@ -423,31 +423,25 @@ app.post("/create-booking", requireApiKey, async (req, res) => {
   }
 });
 
-// ===== INFOBIP CALLS API – INBOUND IVR =====
-app.post("/infobip/call-received", async (req, res) => {
-  try {
-    console.log("📞 Incoming call event from Infobip:");
-    console.log(JSON.stringify(req.body, null, 2));
+/// ===== INFOBIP CALLS API – STRIKTUS FORMATAS =====
+app.post("/infobip/call-received", (req, res) => {
+  // 1. Pirmiausia, tuojau pat atsakome. Jokių async operacijų prieš atsakymą.
+  console.log("🚀 Gaunu skambutį, siunčiu atsakymą!");
 
-    // VISADA grąžinam veiksmą - NEGALIMA palikti tuščio atsakymo!
-    return res.json({
-      action: {
-        name: "say",
-        text: "Sveiki, čia Sanadenta. Jūsų skambutis priimtas, sistema veikia.",
-        language: "lt"
-      }
-    });
+  // 2. Atsakymas turi būti GRYNAS JSON, be jokių papildomų laukų.
+  //    Naudojame tik res.json() ir pateikiame Infobip reikalaujamą struktūrą.
+  res.json({
+    action: {
+      name: "say",
+      text: "Sveiki, čia Sanadenta. Jūsų skambutis priimtas.",
+      language: "lt"
+    }
+  });
 
-  } catch (error) {
-    console.error("❌ Infobip IVR error:", error);
-    return res.status(500).json({
-      action: {
-        name: "hangup"
-      }
-    });
-  }
+  // 3. Po atsakymo išsiuntimo galime log'inti.
+  console.log("✅ Atsakymas su 'say' veiksmu išsiųstas Infobip.");
+  console.log("📞 Skambučio duomenys:", req.body);
 });
-
 // ===== DEBUG ENDPOINT - TIK TESTAVIMUI =====
 if (process.env.NODE_ENV !== "production") {
   app.get("/debug/auth", async (req, res) => {

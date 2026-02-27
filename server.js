@@ -214,7 +214,7 @@ app.get("/", (req, res) => res.json({
   service: "Sanadenta API", 
   status: "running",
   version: "2.0",
-  endpoints: ["/health", "/free-slots", "/create-booking"]
+  endpoints: ["/health", "/free-slots", "/create-booking", "/infobip/call-received"]
 }));
 
 app.get("/health", async (req, res) => {
@@ -423,6 +423,44 @@ app.post("/create-booking", requireApiKey, async (req, res) => {
   }
 });
 
+// ===== INFOBIP CALLS API – INBOUND IVR =====
+app.post("/infobip/call-received", async (req, res) => {
+  try {
+    console.log("📞 Incoming call event from Infobip:");
+    console.log(JSON.stringify(req.body, null, 2));
+
+    const body = req.body;
+
+    // Jei tai pirmas skambučio eventas (Call received)
+    if (body.eventType === "CALL_RECEIVED") {
+      return res.json({
+        action: {
+          name: "say",
+          text: "Sveiki, čia Sanadenta. Testuojame automatinę registracijos sistemą.",
+          language: "lt"
+        }
+      });
+    }
+
+    // Jei nėra eventType – vis tiek atsakom testu
+    return res.json({
+      action: {
+        name: "say",
+        text: "Sanadenta sistema veikia.",
+        language: "lt"
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Infobip IVR error:", error);
+    return res.status(500).json({
+      action: {
+        name: "hangup"
+      }
+    });
+  }
+});
+
 // ===== DEBUG ENDPOINT - TIK TESTAVIMUI =====
 if (process.env.NODE_ENV !== "production") {
   app.get("/debug/auth", async (req, res) => {
@@ -469,44 +507,6 @@ if (process.env.NODE_ENV !== "production") {
   });
 }
 
-// ===== INFOBIP CALLS API – INBOUND IVR =====
-app.post("/infobip/call-received", async (req, res) => {
-  try {
-    console.log("📞 Incoming call event from Infobip:");
-    console.log(JSON.stringify(req.body, null, 2));
-
-    const body = req.body;
-
-    // Jei tai pirmas skambučio eventas (Call received)
-    if (body.eventType === "CALL_RECEIVED") {
-      return res.json({
-        action: {
-          name: "say",
-          text: "Sveiki, čia Sanadenta. Testuojame automatinę registracijos sistemą.",
-          language: "lt"
-        }
-      });
-    }
-
-    // Jei nėra eventType – vis tiek atsakom testu
-    return res.json({
-      action: {
-        name: "say",
-        text: "Sanadenta sistema veikia.",
-        language: "lt"
-      }
-    });
-
-  } catch (error) {
-    console.error("❌ Infobip IVR error:", error);
-    return res.status(500).json({
-      action: {
-        name: "hangup"
-      }
-    });
-  }
-});
-
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({ error: "Route not found" });
@@ -531,6 +531,7 @@ app.listen(PORT, () => {
   console.log(`   GET  /health`);
   console.log(`   GET  /free-slots?date=YYYY-MM-DD&service=...`);
   console.log(`   POST /create-booking`);
+  console.log(`   POST /infobip/call-received (IVR webhook)`);
   if (process.env.NODE_ENV !== "production") {
     console.log(`   GET  /debug/auth (development only)`);
   }

@@ -429,24 +429,11 @@ app.post("/infobip/call-received", async (req, res) => {
     console.log("📞 Incoming call event from Infobip:");
     console.log(JSON.stringify(req.body, null, 2));
 
-    const body = req.body;
-
-    // Jei tai pirmas skambučio eventas (Call received)
-    if (body.eventType === "CALL_RECEIVED") {
-      return res.json({
-        action: {
-          name: "say",
-          text: "Sveiki, čia Sanadenta. Testuojame automatinę registracijos sistemą.",
-          language: "lt"
-        }
-      });
-    }
-
-    // Jei nėra eventType – vis tiek atsakom testu
+    // VISADA grąžinam veiksmą - NEGALIMA palikti tuščio atsakymo!
     return res.json({
       action: {
         name: "say",
-        text: "Sanadenta sistema veikia.",
+        text: "Sveiki, čia Sanadenta. Jūsų skambutis priimtas, sistema veikia.",
         language: "lt"
       }
     });

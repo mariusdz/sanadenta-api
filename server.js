@@ -179,77 +179,134 @@ const requireApiKey = (req, res, next) => {
 // ===== BUSY SLOTS SU GERESNIU ERROR HANDLING =====
 const getBusySlots = async (calendar, timeMin, timeMax) => {
   try {
-    console.log(`🔍 Checking busy slots from ${timeMin} to ${timeMax}`);
-    
-    const response = await calendar.freebusy.query({
-      requestBody: {
-        timeMin,
-        timeMax,
-        timeZone: TIME_ZONE,
-        items: [{ id: CALENDAR_ID }]
-      }
+    console.log(`🔍 Checking calendar events from ${timeMin} to ${timeMax}`);
+
+    const response = await calendar.events.list({
+      calendarId: CALENDAR_ID,
+      timeMin,
+      timeMax,
+      singleEvents: true,
+      orderBy: "startTime",
+      maxResults: 2500
     });
 
-    const busy = response.data.calendars?.[CALENDAR_ID]?.busy || [];
-    console.log(`📊 Found ${busy.length} busy slots`);
-    
-    return busy.map(b => ({
-      start: new Date(b.start),
-      end: new Date(b.end)
-    }));
+    const items = response.data.items || [];
+
+    const busyEvents = items
+      .filter(event => {
+        if (event.status === "cancelled") return false;
+        if (event.transparency === "transparent") return false;
+        if (!event.start || !event.end) return false;
+        if (!event.start.dateTime || !event.end.dateTime) return false;
+        return true;
+      })
+      .map(event => ({
+        start: new Date(event.start.dateTime),
+        end: new Date(event.end.dateTime),
+        summary: event.summary || ""
+      }));
+
+    console.log(`📊 Found ${busyEvents.length} busy events`);
+    return busyEvents;
+
   } catch (error) {
-    console.error("❌ FreeBusy API error:", error.response?.data || error.message);
-    
-    // Jei klaida dėl autentifikacijos, bandome atnaujinti klientą
-    if (error.code === 401 || error.message.includes('auth')) {
+    console.error("❌ Events.list API error:", error.response?.data || error.message);
+
+    if (error.code === 401 || error.message.includes("auth")) {
       throw new Error("Authentication failed - check service account permissions");
     }
-    
+
     throw new Error(`Failed to fetch busy slots: ${error.message}`);
   }
 };
 
-// ===== INFOBIP - AUKŠČIAUSIAS PRIORITETAS =====
-app.post("/infobip/call-received", (req, res) => {
-  console.log("🚀 GAunu skambutį (VIP)!");
-  console.log("Body:", JSON.stringify(req.body, null, 2));
-  res.json({
-    action: {
-      name: "say",
-      text: "Sveiki, čia Sanadenta.",
-      language: "lt"
-    }
-  });
-});
-
-// ===== ROUTES =====
-app.get("/", (req, res) => res.json({ 
-  service: "Sanadenta API", 
-  status: "running",
-  version: "2.0",
-  endpoints: ["/health", "/free-slots", "/create-booking", "/infobip/call-received"]
-}));
-
-app.get("/health", async (req, res) => {
+app.get("/free-slots", requireApiKey, async (req, res) => {
   try {
-    // Patikriname ar veikia Google Calendar API
-    const calendar = await getCalendarClient();
-    const test = await calendar.calendarList.list({ maxResults: 1 });
-    
-    res.json({ 
-      ok: true, 
-      timestamp: new Date().toISOString(),
-      calendar: {
-        connected: true,
-        calendarId: CALENDAR_ID.substring(0, 20) + "...",
-        timezone: TIME_ZONE
-      }
+    res.set({
+      "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0",
+      "Pragma": "no-cache",
+      "Expires": "0",
+      "Surrogate-Control": "no-store"
     });
+
+    const { date, service, durationMinutes } = req.query;
+
+    if (!isValidDate(date)) {
+      return res.status(400).json({ error: "Invalid date format. Use YYYY-MM-DD" });
+    }
+
+    let duration = 60;
+    if (service && SERVICE_DURATIONS[service]) {
+      duration = SERVICE_DURATIONS[service];
+    } else if (durationMinutes) {
+      duration = Number(durationMinutes);
+      if (isNaN(duration) || duration <= 0) {
+        return res.status(400).json({ error: "Invalid durationMinutes" });
+      }
+    }
+
+    const dayStart = DateTime.fromISO(date, { zone: TIME_ZONE }).startOf("day");
+
+    if (!isWeekdayAllowed(dayStart) || isSurgeonDay(dayStart)) {
+      return res.json({
+        ok: true,
+        allowed: false,
+        slots: [],
+        message: "No appointments available on this date"
+      });
+    }
+
+    const allSlots = generateSlots(
+      WORK_HOURS.start,
+      WORK_HOURS.end,
+      WORK_HOURS.stepMinutes,
+      duration
+    );
+
+    const calendar = await getCalendarClient();
+    const timeMin = dayStart.toISO();
+    const timeMax = dayStart.plus({ days: 1 }).toISO();
+
+    const busySlots = await getBusySlots(calendar, timeMin, timeMax);
+
+    const freeSlots = allSlots.filter(timeSlot => {
+      const start = dtLocal(date, timeSlot);
+      const end = start.plus({ minutes: duration });
+
+      const startDate = new Date(start.toUTC().toISO());
+      const endDate = new Date(end.toUTC().toISO());
+
+      return !busySlots.some(busy => overlaps(startDate, endDate, busy.start, busy.end));
+    });
+
+    return res.json({
+      ok: true,
+      allowed: true,
+      date,
+      durationMinutes: duration,
+      stepMinutes: WORK_HOURS.stepMinutes,
+      slots: freeSlots,
+      totalSlots: freeSlots.length
+    });
+
   } catch (error) {
-    res.status(500).json({ 
-      ok: false, 
-      error: "Calendar connection failed",
-      details: error.message
+    console.error("❌ FREE-SLOTS ERROR:", error);
+
+    let statusCode = 500;
+    let errorMessage = error.message;
+
+    if (error.message.includes("Authentication failed")) {
+      statusCode = 503;
+      errorMessage = "Calendar service unavailable - authentication issue";
+    } else if (error.message.includes("permissions")) {
+      statusCode = 403;
+      errorMessage = "Calendar access denied - check service account permissions";
+    }
+
+    return res.status(statusCode).json({
+      error: "Server error",
+      message: errorMessage,
+      details: process.env.NODE_ENV === "development" ? error.stack : undefined
     });
   }
 });

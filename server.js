@@ -17,6 +17,14 @@ const CALENDAR_ID =
   process.env.CALENDAR_ID ||
   "10749b71d8c90e5386ee005cfbb1e2f88ab28329d7dfab9b4fe6281528af92e6@group.calendar.google.com";
 
+const INFOBIP_API_KEY = process.env.INFOBIP_API_KEY || "";
+const INFOBIP_BASE_URL = process.env.INFOBIP_BASE_URL || "";
+const INFOBIP_SMS_FROM = process.env.INFOBIP_SMS_FROM || ""; // reply-capable number
+const INFOBIP_CONFIRMATION_FROM =
+  process.env.INFOBIP_CONFIRMATION_FROM || INFOBIP_SMS_FROM || "SANADENTA";
+const ADMIN_PHONE = process.env.ADMIN_PHONE || "";
+const REMINDER_CHECK_INTERVAL_MS = Number(process.env.REMINDER_CHECK_INTERVAL_MS || 300000);
+
 // Darbo laikas
 const WORK_HOURS = {
   start: "08:00",
@@ -34,6 +42,7 @@ const SERVICE_DURATIONS = {
 // ===== CACHE AUTH / CALENDAR =====
 let cachedAuth = null;
 let cachedCalendar = null;
+let reminderJobStarted = false;
 
 // ===== HELPER FUNKCIJOS =====
 const pad2 = (n) => String(n).padStart(2, "0");
@@ -79,6 +88,82 @@ const dtLocal = (date, time) => {
 
 const formatHumanDate = (dt) => dt.setLocale("lt").toFormat("dd/MM/yyyy");
 const formatHumanDateTime = (dt) => dt.setLocale("lt").toFormat("dd/MM/yyyy HH:mm");
+
+const normalizePhone = (phone) => {
+  if (!phone) return "";
+  const cleaned = String(phone).replace(/[^\d+]/g, "");
+
+  if (cleaned.startsWith("+")) return cleaned;
+
+  if (cleaned.startsWith("370")) return `+${cleaned}`;
+
+  if (cleaned.startsWith("8") && cleaned.length >= 9) {
+    return `+370${cleaned.slice(1)}`;
+  }
+
+  return cleaned;
+};
+
+const normalizeSmsText = (text) => {
+  return String(text || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+};
+
+const isYesReply = (text) => {
+  const t = normalizeSmsText(text);
+  return ["taip", "jo", "ok", "gerai", "tinka", "patvirtinu", "yes"].includes(t);
+};
+
+const isNoReply = (text) => {
+  const t = normalizeSmsText(text);
+  return ["ne", "negaliu", "neatvyksiu", "nebusiu", "netinka", "no"].includes(t);
+};
+
+const safeJsonParse = (value, fallback = {}) => {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+};
+
+const toPrivateMeta = (event) => {
+  return event?.extendedProperties?.private || {};
+};
+
+const getReplyStatus = (event) => toPrivateMeta(event).replyStatus || "pending";
+const getReminderSentAt = (event) => toPrivateMeta(event).reminderSentAt || "";
+const getAdminNotifiedAt = (event) => toPrivateMeta(event).adminNotifiedAt || "";
+const getPatientPhone = (event) => normalizePhone(toPrivateMeta(event).patientPhone || "");
+const getReminderAt = (event) => toPrivateMeta(event).reminderAt || "";
+const getServiceName = (event) => toPrivateMeta(event).service || "";
+
+const buildReminderSendTime = (appointmentDT) => {
+  const hour = appointmentDT.hour;
+
+  // 08:00 / 09:00 / 10:00 -> iš vakaro 18:00
+  if ([8, 9, 10].includes(hour)) {
+    return appointmentDT.minus({ days: 1 }).set({
+      hour: 18,
+      minute: 0,
+      second: 0,
+      millisecond: 0,
+    });
+  }
+
+  // kitu atveju -> 3 valandos iki vizito
+  return appointmentDT.minus({ hours: 3 });
+};
+
+const isMorningAppointment = (appointmentDT) => [8, 9, 10].includes(appointmentDT.hour);
+
+const getEventDateTime = (event) => {
+  const start = event?.start?.dateTime;
+  if (!start) return null;
+  return DateTime.fromISO(start, { zone: TIME_ZONE }).setZone(TIME_ZONE);
+};
 
 // ===== API KEY MIDDLEWARE =====
 const requireApiKey = (req, res, next) => {
@@ -188,7 +273,7 @@ const getBusySlots = async (calendar, timeMin, timeMax) => {
         if (event.status === "cancelled") return false;
         if (event.transparency === "transparent") return false;
         if (!event.start || !event.end) return false;
-        if (!event.start.dateTime || !event.end.dateTime) return false; // ignoruojam all-day
+        if (!event.start.dateTime || !event.end.dateTime) return false;
         return true;
       })
       .map((event) => ({
@@ -211,13 +296,227 @@ const getBusySlots = async (calendar, timeMin, timeMax) => {
   }
 };
 
+// ===== INFOBIP SMS =====
+const canSendSms = () => Boolean(INFOBIP_API_KEY && INFOBIP_BASE_URL);
+
+const sendInfobipSms = async ({ from, to, text }) => {
+  if (!canSendSms()) {
+    console.warn("⚠️ SMS skipped: INFOBIP env vars missing");
+    return { skipped: true, reason: "Missing Infobip config" };
+  }
+
+  const payload = {
+    messages: [
+      {
+        from,
+        destinations: [{ to: normalizePhone(to) }],
+        text,
+      },
+    ],
+  };
+
+  const response = await fetch(`${INFOBIP_BASE_URL}/sms/2/text/advanced`, {
+    method: "POST",
+    headers: {
+      Authorization: `App ${INFOBIP_API_KEY}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    console.error("❌ Infobip SMS error:", data);
+    throw new Error(`Infobip SMS failed with status ${response.status}`);
+  }
+
+  console.log("✅ SMS sent:", JSON.stringify(data));
+  return data;
+};
+
+const sendBookingConfirmationSms = async ({ phone, dateTime, service }) => {
+  const text =
+    `Sanadenta: Jusu vizitas patvirtintas ${formatHumanDateTime(dateTime)}.` +
+    ` Paslauga: ${service}. Jei negalite atvykti, skambinkite klinikai.`;
+
+  return sendInfobipSms({
+    from: INFOBIP_CONFIRMATION_FROM,
+    to: phone,
+    text,
+  });
+};
+
+const sendReminderQuestionSms = async ({ phone, dateTime }) => {
+  const text =
+    `Sanadenta: primename apie vizita ${formatHumanDateTime(dateTime)}.` +
+    ` Ar atvyksite? Atsakykite: TAIP arba NE.`;
+
+  return sendInfobipSms({
+    from: INFOBIP_SMS_FROM,
+    to: phone,
+    text,
+  });
+};
+
+const sendAdminCancellationSms = async ({ patientPhone, dateTime, service }) => {
+  if (!ADMIN_PHONE) {
+    console.warn("⚠️ ADMIN_PHONE not set, admin SMS skipped");
+    return { skipped: true, reason: "Missing ADMIN_PHONE" };
+  }
+
+  const text =
+    `Sanadenta: pacientas ${patientPhone} atsauke vizita ` +
+    `${formatHumanDateTime(dateTime)} (${service}). Laikas atsilaisvino.`;
+
+  return sendInfobipSms({
+    from: INFOBIP_CONFIRMATION_FROM || INFOBIP_SMS_FROM,
+    to: ADMIN_PHONE,
+    text,
+  });
+};
+
+// ===== CALENDAR EVENT METADATA =====
+const patchEventPrivateMeta = async (calendar, eventId, patch) => {
+  const existing = await calendar.events.get({
+    calendarId: CALENDAR_ID,
+    eventId,
+  });
+
+  const currentPrivate = existing.data.extendedProperties?.private || {};
+
+  const updatedPrivate = {
+    ...currentPrivate,
+    ...patch,
+  };
+
+  const response = await calendar.events.patch({
+    calendarId: CALENDAR_ID,
+    eventId,
+    requestBody: {
+      extendedProperties: {
+        private: updatedPrivate,
+      },
+    },
+  });
+
+  return response.data;
+};
+
+const buildEventPrivateMeta = ({
+  name,
+  phone,
+  service,
+  duration,
+  reminderAt,
+}) => ({
+  patientName: name,
+  patientPhone: normalizePhone(phone),
+  service,
+  durationMinutes: String(duration),
+  reminderAt: reminderAt.toISO(),
+  reminderSentAt: "",
+  replyStatus: "pending",
+  replyReceivedAt: "",
+  adminNotifiedAt: "",
+  createdBy: "sanadenta-api",
+});
+
+// ===== REMINDER ENGINE =====
+const getUpcomingManagedEvents = async (calendar, daysAhead = 3) => {
+  const now = DateTime.now().setZone(TIME_ZONE);
+  const until = now.plus({ days: daysAhead });
+
+  const response = await calendar.events.list({
+    calendarId: CALENDAR_ID,
+    timeMin: now.minus({ days: 1 }).toISO(),
+    timeMax: until.toISO(),
+    singleEvents: true,
+    orderBy: "startTime",
+    maxResults: 2500,
+  });
+
+  const items = response.data.items || [];
+
+  return items.filter((event) => {
+    if (event.status === "cancelled") return false;
+    if (!event.start?.dateTime) return false;
+
+    const meta = toPrivateMeta(event);
+    return meta.createdBy === "sanadenta-api" && meta.patientPhone;
+  });
+};
+
+const processDueReminders = async () => {
+  try {
+    const calendar = getCalendarClient();
+    const now = DateTime.now().setZone(TIME_ZONE);
+
+    const events = await getUpcomingManagedEvents(calendar, 3);
+
+    for (const event of events) {
+      const eventDT = getEventDateTime(event);
+      if (!eventDT) continue;
+      if (eventDT <= now) continue;
+
+      const meta = toPrivateMeta(event);
+      const patientPhone = normalizePhone(meta.patientPhone || "");
+      const reminderAtIso = meta.reminderAt || "";
+      const reminderSentAt = meta.reminderSentAt || "";
+      const replyStatus = meta.replyStatus || "pending";
+
+      if (!patientPhone) continue;
+      if (!reminderAtIso) continue;
+      if (reminderSentAt) continue;
+      if (replyStatus !== "pending") continue;
+
+      const reminderAt = DateTime.fromISO(reminderAtIso, { zone: TIME_ZONE });
+      if (!reminderAt.isValid) continue;
+
+      if (reminderAt <= now) {
+        console.log(`📨 Sending reminder for event ${event.id} at ${eventDT.toISO()}`);
+
+        await sendReminderQuestionSms({
+          phone: patientPhone,
+          dateTime: eventDT,
+        });
+
+        await patchEventPrivateMeta(calendar, event.id, {
+          reminderSentAt: now.toISO(),
+        });
+      }
+    }
+  } catch (error) {
+    console.error("❌ Reminder processor error:", error.message);
+  }
+};
+
+const startReminderJob = () => {
+  if (reminderJobStarted) return;
+  reminderJobStarted = true;
+
+  console.log(`⏰ Reminder job started. Interval: ${REMINDER_CHECK_INTERVAL_MS} ms`);
+
+  setInterval(async () => {
+    await processDueReminders();
+  }, REMINDER_CHECK_INTERVAL_MS);
+};
+
 // ===== ROOT =====
 app.get("/", (req, res) =>
   res.json({
     service: "Sanadenta API",
     status: "running",
-    version: "3.0",
-    endpoints: ["/health", "/free-slots", "/create-booking", "/infobip/call-received"],
+    version: "4.0",
+    endpoints: [
+      "/health",
+      "/free-slots",
+      "/create-booking",
+      "/infobip/call-received",
+      "/infobip/inbound-sms",
+      "/run-reminders-now",
+    ],
   })
 );
 
@@ -226,7 +525,6 @@ app.get("/health", async (req, res) => {
   try {
     const calendar = getCalendarClient();
 
-    // Tik health route testuoja ryšį
     const test = await calendar.calendarList.list({ maxResults: 1 });
 
     res.json({
@@ -237,6 +535,12 @@ app.get("/health", async (req, res) => {
         calendarId: CALENDAR_ID.substring(0, 20) + "...",
         timezone: TIME_ZONE,
         firstCalendar: test.data.items?.[0]?.summary || "Unknown",
+      },
+      sms: {
+        configured: canSendSms(),
+        from: INFOBIP_SMS_FROM || null,
+        confirmationFrom: INFOBIP_CONFIRMATION_FROM || null,
+        adminPhoneConfigured: Boolean(ADMIN_PHONE),
       },
     });
   } catch (error) {
@@ -251,7 +555,6 @@ app.get("/health", async (req, res) => {
 // ===== FREE SLOTS =====
 app.get("/free-slots", requireApiKey, async (req, res) => {
   try {
-    // No cache
     res.set({
       "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0",
       Pragma: "no-cache",
@@ -404,7 +707,6 @@ app.post("/create-booking", requireApiKey, async (req, res) => {
 
     const calendar = getCalendarClient();
 
-    // Prieš kuriant dar kartą tikriname konfliktą
     const timeMin = startDT.toISO();
     const timeMax = endDT.toISO();
 
@@ -420,16 +722,20 @@ app.post("/create-booking", requireApiKey, async (req, res) => {
       });
     }
 
+    const normalizedPhone = normalizePhone(phone);
+    const reminderAt = buildReminderSendTime(startDT);
+
     const event = await calendar.events.insert({
       calendarId: CALENDAR_ID,
       requestBody: {
         summary: `Sanadenta — ${service} — ${name}`,
         description:
           `Pacientas: ${name}\n` +
-          `Telefonas: ${phone}\n` +
+          `Telefonas: ${normalizedPhone}\n` +
           `Paslauga: ${service}\n` +
           `Trukmė: ${duration} min\n` +
-          `Rezervuota: ${new Date().toISOString()}`,
+          `Rezervuota: ${new Date().toISOString()}\n` +
+          `Reminder siuntimas: ${reminderAt.toISO()}`,
         start: {
           dateTime: startDT.toISO(),
           timeZone: TIME_ZONE,
@@ -438,10 +744,30 @@ app.post("/create-booking", requireApiKey, async (req, res) => {
           dateTime: endDT.toISO(),
           timeZone: TIME_ZONE,
         },
+        extendedProperties: {
+          private: buildEventPrivateMeta({
+            name,
+            phone: normalizedPhone,
+            service,
+            duration,
+            reminderAt,
+          }),
+        },
       },
     });
 
     console.log(`✅ Booking created successfully: ${event.data.id}`);
+
+    // 1 SMS iškart po registracijos
+    try {
+      await sendBookingConfirmationSms({
+        phone: normalizedPhone,
+        dateTime: startDT,
+        service,
+      });
+    } catch (smsError) {
+      console.error("⚠️ Confirmation SMS failed:", smsError.message);
+    }
 
     return res.json({
       success: true,
@@ -454,6 +780,11 @@ app.post("/create-booking", requireApiKey, async (req, res) => {
       time: startDT.toFormat("HH:mm"),
       service,
       duration,
+      reminderAt: reminderAt.toISO(),
+      reminderAtDisplay: formatHumanDateTime(reminderAt),
+      reminderRule: isMorningAppointment(startDT)
+        ? "Iš vakaro 18:00"
+        : "3 valandos iki vizito",
     });
   } catch (error) {
     console.error("❌ CREATE-BOOKING ERROR:", error);
@@ -478,7 +809,7 @@ app.post("/create-booking", requireApiKey, async (req, res) => {
   }
 });
 
-// ===== INFOBIP WEBHOOK =====
+// ===== INFOBIP WEBHOOK - VOICE =====
 app.post("/infobip/call-received", (req, res) => {
   console.log("🚀 Gautas skambutis!");
   console.log("Body:", JSON.stringify(req.body, null, 2));
@@ -490,6 +821,131 @@ app.post("/infobip/call-received", (req, res) => {
       language: "lt",
     },
   });
+});
+
+// ===== INFOBIP WEBHOOK - INBOUND SMS =====
+app.post("/infobip/inbound-sms", async (req, res) => {
+  try {
+    console.log("📩 Inbound SMS webhook:", JSON.stringify(req.body, null, 2));
+
+    const messages = req.body?.results || req.body?.messages || [];
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.json({ ok: true, message: "No SMS payload" });
+    }
+
+    const calendar = getCalendarClient();
+
+    for (const sms of messages) {
+      const from = normalizePhone(sms.from || sms.sender || "");
+      const text = sms.text || sms.message || "";
+
+      if (!from || !text) continue;
+
+      const now = DateTime.now().setZone(TIME_ZONE);
+
+      // Ieškom artimiausio būsimo arba ką tik atšaukto/laukiančio vizito pagal telefoną
+      const response = await calendar.events.list({
+        calendarId: CALENDAR_ID,
+        timeMin: now.minus({ days: 2 }).toISO(),
+        timeMax: now.plus({ days: 30 }).toISO(),
+        singleEvents: true,
+        orderBy: "startTime",
+        maxResults: 2500,
+      });
+
+      const events = (response.data.items || []).filter((event) => {
+        if (event.status === "cancelled") return false;
+        if (!event.start?.dateTime) return false;
+        return getPatientPhone(event) === from;
+      });
+
+      if (events.length === 0) {
+        console.log(`⚠️ No matching event found for phone ${from}`);
+        continue;
+      }
+
+      // Imame artimiausią būsimą vizitą
+      const sorted = events.sort((a, b) => {
+        const aDt = getEventDateTime(a)?.toMillis() || 0;
+        const bDt = getEventDateTime(b)?.toMillis() || 0;
+        return aDt - bDt;
+      });
+
+      const targetEvent = sorted.find((event) => {
+        const eventDT = getEventDateTime(event);
+        if (!eventDT) return false;
+        return eventDT >= now.minus({ hours: 12 });
+      }) || sorted[0];
+
+      const eventDT = getEventDateTime(targetEvent);
+      if (!eventDT) continue;
+
+      const currentReplyStatus = getReplyStatus(targetEvent);
+      if (currentReplyStatus === "no") {
+        console.log(`ℹ️ Event ${targetEvent.id} already cancelled`);
+        continue;
+      }
+
+      if (isYesReply(text)) {
+        await patchEventPrivateMeta(calendar, targetEvent.id, {
+          replyStatus: "yes",
+          replyReceivedAt: now.toISO(),
+        });
+
+        console.log(`✅ Patient confirmed event ${targetEvent.id}`);
+        continue;
+      }
+
+      if (isNoReply(text)) {
+        await patchEventPrivateMeta(calendar, targetEvent.id, {
+          replyStatus: "no",
+          replyReceivedAt: now.toISO(),
+        });
+
+        await calendar.events.delete({
+          calendarId: CALENDAR_ID,
+          eventId: targetEvent.id,
+        });
+
+        console.log(`🗑️ Event deleted after patient cancellation: ${targetEvent.id}`);
+
+        try {
+          await sendAdminCancellationSms({
+            patientPhone: from,
+            dateTime: eventDT,
+            service: getServiceName(targetEvent) || targetEvent.summary || "Vizitas",
+          });
+        } catch (adminSmsError) {
+          console.error("⚠️ Admin SMS failed:", adminSmsError.message);
+        }
+
+        continue;
+      }
+
+      console.log(`ℹ️ Unknown SMS reply ignored from ${from}: "${text}"`);
+    }
+
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("❌ Inbound SMS processing error:", error);
+    return res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
+});
+
+// ===== MANUAL REMINDER RUN =====
+app.post("/run-reminders-now", requireApiKey, async (req, res) => {
+  try {
+    await processDueReminders();
+    return res.json({ ok: true, message: "Reminder check completed" });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
 });
 
 // ===== DEBUG ENDPOINT =====
@@ -504,7 +960,7 @@ if (process.env.NODE_ENV !== "production") {
 
       const events = await calendar.events.list({
         calendarId: CALENDAR_ID,
-        maxResults: 5,
+        maxResults: 10,
         timeMin: now,
         singleEvents: true,
         orderBy: "startTime",
@@ -527,6 +983,7 @@ if (process.env.NODE_ENV !== "production") {
           start: e.start,
           end: e.end,
           status: e.status,
+          privateMeta: e.extendedProperties?.private || {},
         })),
       });
     } catch (error) {
@@ -559,6 +1016,9 @@ app.listen(PORT, () => {
   console.log(`📍 Timezone: ${TIME_ZONE}`);
   console.log(`📅 Calendar ID: ${CALENDAR_ID.substring(0, 20)}...`);
   console.log(`🔑 API Key protection: ${API_KEY ? "ON" : "OFF"}`);
+  console.log(`📩 SMS configured: ${canSendSms() ? "YES" : "NO"}`);
+  console.log(`📞 Reply-capable SMS from: ${INFOBIP_SMS_FROM || "NOT SET"}`);
+  console.log(`👩‍💼 Admin phone configured: ${ADMIN_PHONE ? "YES" : "NO"}`);
 
   console.log(`\n📋 Endpoints:`);
   console.log(`   GET  /`);
@@ -566,10 +1026,14 @@ app.listen(PORT, () => {
   console.log(`   GET  /free-slots?date=YYYY-MM-DD&service=...`);
   console.log(`   POST /create-booking`);
   console.log(`   POST /infobip/call-received (IVR webhook)`);
+  console.log(`   POST /infobip/inbound-sms`);
+  console.log(`   POST /run-reminders-now`);
 
   if (process.env.NODE_ENV !== "production") {
     console.log(`   GET  /debug/auth (development only)`);
   }
 
   console.log(`\n✅ Server ready\n`);
+
+  startReminderJob();
 });

@@ -1,4 +1,4 @@
-const express = require("express");
+cconst express = require("express");
 const bodyParser = require("body-parser");
 const cors = require("cors");
 const { google } = require("googleapis");
@@ -43,6 +43,19 @@ const SERVICE_DURATIONS = {
 let cachedAuth = null;
 let cachedCalendar = null;
 let reminderJobStarted = false;
+
+// ===== FREE SLOTS CACHE =====
+const freeSlotsCache = new Map();
+const FREE_SLOTS_CACHE_MS = Number(process.env.FREE_SLOTS_CACHE_MS || 30000);
+
+const getFreeSlotsCacheKey = (date, service, durationMinutes) => {
+  return `${date}__${service || ""}__${durationMinutes || ""}`;
+};
+
+const clearFreeSlotsCache = () => {
+  freeSlotsCache.clear();
+  console.log("🧹 Free slots cache cleared");
+};
 
 // ===== HELPER FUNKCIJOS =====
 const pad2 = (n) => String(n).padStart(2, "0");
@@ -121,23 +134,12 @@ const isNoReply = (text) => {
   return ["ne", "negaliu", "neatvyksiu", "nebusiu", "netinka", "no"].includes(t);
 };
 
-const safeJsonParse = (value, fallback = {}) => {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return fallback;
-  }
-};
-
 const toPrivateMeta = (event) => {
   return event?.extendedProperties?.private || {};
 };
 
 const getReplyStatus = (event) => toPrivateMeta(event).replyStatus || "pending";
-const getReminderSentAt = (event) => toPrivateMeta(event).reminderSentAt || "";
-const getAdminNotifiedAt = (event) => toPrivateMeta(event).adminNotifiedAt || "";
 const getPatientPhone = (event) => normalizePhone(toPrivateMeta(event).patientPhone || "");
-const getReminderAt = (event) => toPrivateMeta(event).reminderAt || "";
 const getServiceName = (event) => toPrivateMeta(event).service || "";
 
 const buildReminderSendTime = (appointmentDT) => {
@@ -468,7 +470,7 @@ const processDueReminders = async () => {
 
       if (!patientPhone) continue;
       if (!reminderAtIso) continue;
-      if (reminderSentAt) continue;
+      if (!reminderSentAt) continue;
       if (replyStatus !== "pending") continue;
 
       const reminderAt = DateTime.fromISO(reminderAtIso, { zone: TIME_ZONE });
@@ -508,7 +510,7 @@ app.get("/", (req, res) =>
   res.json({
     service: "Sanadenta API",
     status: "running",
-    version: "4.0",
+    version: "4.1",
     endpoints: [
       "/health",
       "/free-slots",
@@ -542,6 +544,10 @@ app.get("/health", async (req, res) => {
         confirmationFrom: INFOBIP_CONFIRMATION_FROM || null,
         adminPhoneConfigured: Boolean(ADMIN_PHONE),
       },
+      cache: {
+        freeSlotsCacheMs: FREE_SLOTS_CACHE_MS,
+        freeSlotsEntries: freeSlotsCache.size,
+      },
     });
   } catch (error) {
     res.status(500).json({
@@ -555,17 +561,21 @@ app.get("/health", async (req, res) => {
 // ===== FREE SLOTS =====
 app.get("/free-slots", requireApiKey, async (req, res) => {
   try {
-    res.set({
-      "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0",
-      Pragma: "no-cache",
-      Expires: "0",
-      "Surrogate-Control": "no-store",
-    });
-
     const { date, service, durationMinutes } = req.query;
 
     if (!isValidDate(date)) {
       return res.status(400).json({ error: "Invalid date format. Use YYYY-MM-DD" });
+    }
+
+    const cacheKey = getFreeSlotsCacheKey(date, service, durationMinutes);
+    const cached = freeSlotsCache.get(cacheKey);
+
+    if (cached && Date.now() - cached.createdAt < FREE_SLOTS_CACHE_MS) {
+      console.log(`⚡ Returning cached free slots for ${cacheKey}`);
+      return res.json({
+        ...cached.data,
+        cached: true,
+      });
     }
 
     let duration = 60;
@@ -581,14 +591,22 @@ app.get("/free-slots", requireApiKey, async (req, res) => {
     const dayStart = DateTime.fromISO(date, { zone: TIME_ZONE }).startOf("day");
 
     if (!isWeekdayAllowed(dayStart) || isSurgeonDay(dayStart)) {
-      return res.json({
+      const responseData = {
         ok: true,
         allowed: false,
         date,
         dateDisplay: formatHumanDate(dayStart),
         slots: [],
+        totalSlots: 0,
         message: "No appointments available on this date",
+      };
+
+      freeSlotsCache.set(cacheKey, {
+        createdAt: Date.now(),
+        data: responseData,
       });
+
+      return res.json(responseData);
     }
 
     const allSlots = generateSlots(
@@ -614,7 +632,7 @@ app.get("/free-slots", requireApiKey, async (req, res) => {
       return !busySlots.some((busy) => overlaps(startDate, endDate, busy.start, busy.end));
     });
 
-    return res.json({
+    const responseData = {
       ok: true,
       allowed: true,
       date,
@@ -623,7 +641,17 @@ app.get("/free-slots", requireApiKey, async (req, res) => {
       stepMinutes: WORK_HOURS.stepMinutes,
       slots: freeSlots,
       totalSlots: freeSlots.length,
+      cached: false,
+    };
+
+    freeSlotsCache.set(cacheKey, {
+      createdAt: Date.now(),
+      data: responseData,
     });
+
+    console.log(`✅ Free slots calculated and cached for ${cacheKey}`);
+
+    return res.json(responseData);
   } catch (error) {
     console.error("❌ FREE-SLOTS ERROR:", error);
 
@@ -757,6 +785,7 @@ app.post("/create-booking", requireApiKey, async (req, res) => {
     });
 
     console.log(`✅ Booking created successfully: ${event.data.id}`);
+    clearFreeSlotsCache();
 
     // 1 SMS iškart po registracijos
     try {
@@ -843,7 +872,6 @@ app.post("/infobip/inbound-sms", async (req, res) => {
 
       const now = DateTime.now().setZone(TIME_ZONE);
 
-      // Ieškom artimiausio būsimo arba ką tik atšaukto/laukiančio vizito pagal telefoną
       const response = await calendar.events.list({
         calendarId: CALENDAR_ID,
         timeMin: now.minus({ days: 2 }).toISO(),
@@ -864,18 +892,18 @@ app.post("/infobip/inbound-sms", async (req, res) => {
         continue;
       }
 
-      // Imame artimiausią būsimą vizitą
       const sorted = events.sort((a, b) => {
         const aDt = getEventDateTime(a)?.toMillis() || 0;
         const bDt = getEventDateTime(b)?.toMillis() || 0;
         return aDt - bDt;
       });
 
-      const targetEvent = sorted.find((event) => {
-        const eventDT = getEventDateTime(event);
-        if (!eventDT) return false;
-        return eventDT >= now.minus({ hours: 12 });
-      }) || sorted[0];
+      const targetEvent =
+        sorted.find((event) => {
+          const eventDT = getEventDateTime(event);
+          if (!eventDT) return false;
+          return eventDT >= now.minus({ hours: 12 });
+        }) || sorted[0];
 
       const eventDT = getEventDateTime(targetEvent);
       if (!eventDT) continue;
@@ -907,6 +935,7 @@ app.post("/infobip/inbound-sms", async (req, res) => {
           eventId: targetEvent.id,
         });
 
+        clearFreeSlotsCache();
         console.log(`🗑️ Event deleted after patient cancellation: ${targetEvent.id}`);
 
         try {
@@ -1019,6 +1048,7 @@ app.listen(PORT, () => {
   console.log(`📩 SMS configured: ${canSendSms() ? "YES" : "NO"}`);
   console.log(`📞 Reply-capable SMS from: ${INFOBIP_SMS_FROM || "NOT SET"}`);
   console.log(`👩‍💼 Admin phone configured: ${ADMIN_PHONE ? "YES" : "NO"}`);
+  console.log(`⚡ Free slots cache TTL: ${FREE_SLOTS_CACHE_MS} ms`);
 
   console.log(`\n📋 Endpoints:`);
   console.log(`   GET  /`);

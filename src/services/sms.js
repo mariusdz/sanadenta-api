@@ -76,29 +76,25 @@ const sendInfobipSms = async ({ from, to, text }) => {
 };
 
 const sendBookingConfirmationSms = async ({ phone, dateTime, service }) => {
-  const from = getConfirmationSender();
-
   const text =
     `Sanadenta: Jūsų vizitas patvirtintas ${formatHumanDateTime(dateTime)}. ` +
     `Paslauga: ${service}. Jei negalite atvykti, atsakykite į priminimo SMS arba skambinkite klinikai.`;
 
   return sendInfobipSms({
-    from,
+    from: getConfirmationSender(),
     to: phone,
     text,
   });
 };
 
 const sendReminderQuestionSms = async ({ phone, dateTime, service }) => {
-  const from = getReminderSender();
-
   const text =
     `Sanadenta: primename apie vizitą ${formatHumanDateTime(dateTime)}` +
     `${service ? `, paslauga: ${service}` : ''}. ` +
     `Ar atvyksite? Atsakykite: TAIP arba NE.`;
 
   return sendInfobipSms({
-    from,
+    from: getReminderSender(),
     to: phone,
     text,
   });
@@ -110,14 +106,12 @@ const sendAdminCancellationSms = async ({ patientPhone, dateTime, service }) => 
     return { skipped: true, reason: 'Missing ADMIN_PHONE' };
   }
 
-  const from = getConfirmationSender();
-
   const text =
     `Sanadenta: pacientas ${normalizePhone(patientPhone)} atšaukė vizitą ` +
     `${formatHumanDateTime(dateTime)} (${service || 'Vizitas'}). Laikas atsilaisvino.`;
 
   return sendInfobipSms({
-    from,
+    from: getConfirmationSender(),
     to: ADMIN_PHONE,
     text,
   });

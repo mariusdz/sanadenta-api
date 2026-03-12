@@ -1,4 +1,3 @@
-// src/routes/freeSlots.js
 const express = require('express');
 const router = express.Router();
 const { DateTime } = require('luxon');
@@ -37,14 +36,12 @@ router.get('/', requireApiKey, async (req, res) => {
   try {
     const { date, service, durationMinutes } = req.query;
 
-    // 1. Datos validacija
     if (!isValidDate(date)) {
       return res.status(400).json({
         error: 'Invalid date format. Use YYYY-MM-DD',
       });
     }
 
-    // 2. Trukmės nustatymas
     let duration = 60;
 
     if (service && SERVICE_DURATIONS[service]) {
@@ -59,19 +56,6 @@ router.get('/', requireApiKey, async (req, res) => {
       }
     }
 
-    // 3. Cache raktas
-    const cacheKey = getFreeSlotsCacheKey(date, service || '', duration);
-    const cached = getCachedFreeSlots(cacheKey, FREE_SLOTS_CACHE_MS);
-
-    if (cached) {
-      console.log(`⚡ Returning cached free slots for ${cacheKey}`);
-      return res.json({
-        ...cached,
-        cached: true,
-      });
-    }
-
-    // 4. Dienos objektas
     const dayStart = DateTime.fromISO(date, { zone: TIME_ZONE }).startOf('day');
 
     if (!dayStart.isValid) {
@@ -80,13 +64,13 @@ router.get('/', requireApiKey, async (req, res) => {
       });
     }
 
-    // 5. Ar leidžiama registruoti tą dieną
     if (!isWeekdayAllowed(dayStart) || isSurgeonDay(dayStart)) {
       const responseData = {
         ok: true,
         allowed: false,
         date,
         dateDisplay: formatHumanDate(dayStart),
+        service: service || null,
         durationMinutes: duration,
         slots: [],
         totalSlots: 0,
@@ -94,11 +78,23 @@ router.get('/', requireApiKey, async (req, res) => {
         message: 'No appointments available on this date',
       };
 
-      setCachedFreeSlots(cacheKey, responseData);
       return res.json(responseData);
     }
 
-    // 6. Sugeneruojam teorinius slotus pagal darbo laiką
+    const now = DateTime.now().setZone(TIME_ZONE);
+    const isToday = dayStart.hasSame(now, 'day');
+
+    const cacheKey = getFreeSlotsCacheKey(date, service || '', duration);
+    const cached = getCachedFreeSlots(cacheKey, FREE_SLOTS_CACHE_MS);
+
+    if (cached && !isToday) {
+      console.log(`⚡ Returning cached free slots for ${cacheKey}`);
+      return res.json({
+        ...cached,
+        cached: true,
+      });
+    }
+
     const allSlots = generateSlots(
       WORK_HOURS.start,
       WORK_HOURS.end,
@@ -106,7 +102,6 @@ router.get('/', requireApiKey, async (req, res) => {
       duration
     );
 
-    // 7. Pasiimam užimtus eventus iš Google Calendar
     const calendar = getCalendarClient();
 
     const timeMin = dayStart.toISO();
@@ -114,17 +109,27 @@ router.get('/', requireApiKey, async (req, res) => {
 
     const busySlots = await getBusySlots(calendar, timeMin, timeMax);
 
-    // 8. Atfiltruojam tik realiai laisvus laikus
     const freeSlots = allSlots.filter((timeSlot) => {
       const start = dtLocal(date, timeSlot);
       const end = start.plus({ minutes: duration });
 
+      if (!start.isValid || !end.isValid) {
+        return false;
+      }
+
+      // Jei data yra šiandien, neberodom praėjusių laikų
+      if (isToday && start.toMillis() <= now.toMillis()) {
+        return false;
+      }
+
       const startDate = new Date(start.toUTC().toISO());
       const endDate = new Date(end.toUTC().toISO());
 
-      return !busySlots.some((busy) =>
+      const hasConflict = busySlots.some((busy) =>
         overlaps(startDate, endDate, busy.start, busy.end)
       );
+
+      return !hasConflict;
     });
 
     const responseData = {
@@ -142,10 +147,17 @@ router.get('/', requireApiKey, async (req, res) => {
       slots: freeSlots,
       totalSlots: freeSlots.length,
       cached: false,
+      isToday,
+      nowDisplay: now.toFormat('yyyy-MM-dd HH:mm'),
+      timeZone: TIME_ZONE,
     };
 
-    setCachedFreeSlots(cacheKey, responseData);
-    console.log(`✅ Free slots calculated and cached for ${cacheKey}`);
+    if (!isToday) {
+      setCachedFreeSlots(cacheKey, responseData);
+      console.log(`✅ Free slots calculated and cached for ${cacheKey}`);
+    } else {
+      console.log(`✅ Free slots calculated for today (not cached): ${cacheKey}`);
+    }
 
     return res.json(responseData);
   } catch (error) {

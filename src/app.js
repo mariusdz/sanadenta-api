@@ -1,4 +1,3 @@
-// src/app.js
 const express = require('express');
 const cors = require('cors');
 
@@ -6,6 +5,7 @@ const healthRoutes = require('./routes/health');
 const freeSlotsRoutes = require('./routes/freeSlots');
 const bookingRoutes = require('./routes/booking');
 const infobipRoutes = require('./routes/infobip');
+const infobipVoiceRoutes = require('./routes/infobipVoice');
 const remindersRoutes = require('./routes/reminders');
 
 const { testCalendarAccess } = require('./services/googleCalendar');
@@ -47,6 +47,7 @@ app.use('/health', healthRoutes);
 app.use('/free-slots', freeSlotsRoutes);
 app.use('/create-booking', bookingRoutes);
 app.use('/infobip', infobipRoutes);
+app.use('/infobip', infobipVoiceRoutes);
 app.use('/', remindersRoutes);
 
 // Debug route'ai tik development aplinkoje

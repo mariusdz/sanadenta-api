@@ -22,7 +22,18 @@ module.exports = {
     process.env.INFOBIP_CONFIRMATION_FROM ||
     process.env.INFOBIP_SMS_FROM ||
     'SANADENTA',
+
+  INFOBIP_CALLS_APPLICATION_ID:
+    process.env.INFOBIP_CALLS_APPLICATION_ID || '',
+  INFOBIP_CALLS_CONFIGURATION_ID:
+    process.env.INFOBIP_CALLS_CONFIGURATION_ID || '',
+  INFOBIP_VOICE_FROM:
+    process.env.INFOBIP_VOICE_FROM ||
+    process.env.INFOBIP_SMS_FROM ||
+    '',
+
   ADMIN_PHONE: process.env.ADMIN_PHONE || '',
+  PUBLIC_WEB_URL: process.env.PUBLIC_WEB_URL || 'https://sanadenta.lt',
 
   REMINDER_CHECK_INTERVAL_MS: Number(process.env.REMINDER_CHECK_INTERVAL_MS || 300000),
   FREE_SLOTS_CACHE_MS: Number(process.env.FREE_SLOTS_CACHE_MS || 30000),

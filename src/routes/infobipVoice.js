@@ -1,5 +1,6 @@
 const express = require('express');
 const axios = require('axios');
+const { DateTime } = require('luxon');
 
 const router = express.Router();
 
@@ -8,16 +9,15 @@ const {
   INFOBIP_BASE_URL,
   INFOBIP_CALLS_APPLICATION_ID,
   INFOBIP_VOICE_FROM,
+  INFOBIP_SMS_FROM,
+  INFOBIP_CONFIRMATION_FROM,
   ADMIN_PHONE,
   PUBLIC_WEB_URL,
+  TIME_ZONE,
 } = require('../config');
 
 const { normalizePhone } = require('../utils/phone');
-
-// Jei jau turi SMS siuntimą adminui – naudok savo esamą funkciją.
-// Pvz.:
-const { sendInfobipSms } = require('../services/sms'); // jei eksportuota
-// Jei neeksportuota – pakeisk savo admin alert funkcija.
+const { sendInfobipSms } = require('../services/sms');
 
 const infobip = axios.create({
   baseURL: INFOBIP_BASE_URL,
@@ -29,13 +29,13 @@ const infobip = axios.create({
   timeout: 15000,
 });
 
-function isWorkingHours(date = new Date()) {
-  // Lietuvos laiku pas tave galima vėliau padaryti tiksliau per TZ biblioteką.
-  const day = date.getDay(); // 0=sekm, 1=pirm...
-  const hour = date.getHours();
+function isWorkingHours() {
+  const now = DateTime.now().setZone(TIME_ZONE);
+  const weekday = now.weekday;
+  const hour = now.hour;
 
-  const isWeekday = day >= 1 && day <= 5;
-  return isWeekday && hour >= 9 && hour < 18;
+  const isWeekday = weekday >= 1 && weekday <= 5;
+  return isWeekday && hour >= 8 && hour < 17;
 }
 
 async function answerCall(callId) {
@@ -49,11 +49,14 @@ async function sayText(callId, text, language = 'lt-LT') {
   });
 }
 
-async function captureDtmf(callId, {
-  maxLength = 1,
-  timeout = 10,
-  terminator = '#',
-} = {}) {
+async function captureDtmf(
+  callId,
+  {
+    maxLength = 1,
+    timeout = 10,
+    terminator = '#',
+  } = {}
+) {
   return infobip.post(`/calls/1/calls/${callId}/capture/dtmf`, {
     maxLength,
     timeout,
@@ -85,9 +88,8 @@ async function notifyAdminAboutCallback(fromNumber) {
     `Sanadenta VOICE MVP: perskambinti klientui ${fromNumber}. ` +
     `Jis pasirinko callback per voice meniu.`;
 
-  // Jei tavo sendInfobipSms nėra eksportuota – čia pakeisk į savo funkciją.
   return sendInfobipSms({
-    from: INFOBIP_VOICE_FROM,
+    from: INFOBIP_CONFIRMATION_FROM || INFOBIP_SMS_FROM,
     to: normalizePhone(ADMIN_PHONE),
     text,
   });
@@ -108,7 +110,6 @@ async function playMainMenu(callId) {
 }
 
 router.post('/call-received', async (req, res) => {
-  // Infobip turi gauti 200 kuo greičiau
   res.sendStatus(200);
 
   try {
@@ -145,18 +146,16 @@ router.post('/call-received', async (req, res) => {
     }
 
     if (type === 'CALL_ESTABLISHED') {
-      // Inbound call established -> paleidžiam pagrindinį meniu
       await playMainMenu(callId);
       return;
     }
 
-    if (type === 'DTMF_COLLECTED' || type === 'SAY_FINISHED' || type === 'PLAY_FINISHED') {
-      // Jei naudosi captureDTMF, svarbiausias bus DTMF_COLLECTED
+    if (type === 'DTMF_COLLECTED') {
       const pressed = String(digits || '').trim();
 
       if (pressed === '1') {
         const safeFrom = normalizePhone(from || '');
-        await notifyAdminAboutCallback(safeFrom);
+        await notifyAdminAboutCallback(safeFrom || 'Nežinomas numeris');
 
         await sayText(
           callId,
@@ -169,17 +168,31 @@ router.post('/call-received', async (req, res) => {
       }
 
       if (pressed === '2') {
-        // Peradresuojam admin
+        await sayText(
+          callId,
+          'Jungiame su administratore. Prašome palaukti.',
+          'lt-LT'
+        );
         await createDialogToAdmin(callId);
         return;
       }
 
-      // Nieko neįvedė arba neteisingas simbolis
       await sayText(
         callId,
         `Neteisingas pasirinkimas. ` +
           `Registracijai internetu apsilankykite ${PUBLIC_WEB_URL}. ` +
           `Jei reikia, paskambinkite dar kartą.`,
+        'lt-LT'
+      );
+      await hangupCall(callId);
+      return;
+    }
+
+    if (type === 'DTMF_CAPTURE_FAILED') {
+      await sayText(
+        callId,
+        `Nepasirinkote jokio varianto. ` +
+          `Registracijai internetu apsilankykite ${PUBLIC_WEB_URL}. Ačiū.`,
         'lt-LT'
       );
       await hangupCall(callId);
@@ -197,7 +210,6 @@ router.post('/call-received', async (req, res) => {
     }
 
     if (type === 'APPLICATION_TRANSFER_FAILED' || type === 'PARTICIPANT_JOINED_FAILED') {
-      // Jei vėliau pereisi į conference/connect variantą
       console.warn('Transfer/join failed:', event);
       return;
     }

@@ -19,31 +19,33 @@ const {
 const { normalizePhone } = require('../utils/phone');
 const { sendInfobipSms } = require('../services/sms');
 
-const infobip = axios.create({
-  baseURL: INFOBIP_BASE_URL,
-  headers: {
-    Authorization: `App ${INFOBIP_API_KEY}`,
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-  },
-  timeout: 15000,
-});
+function getInfobipClient(baseURL) {
+  return axios.create({
+    baseURL: baseURL || INFOBIP_BASE_URL,
+    headers: {
+      Authorization: `App ${INFOBIP_API_KEY}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    timeout: 15000,
+  });
+}
 
 function isWorkingHours() {
   const now = DateTime.now().setZone(TIME_ZONE);
-  const weekday = now.weekday;
+  const weekday = now.weekday; // 1=Monday, 7=Sunday
   const hour = now.hour;
 
   const isWeekday = weekday >= 1 && weekday <= 5;
   return isWeekday && hour >= 8 && hour < 17;
 }
 
-async function answerCall(callId) {
-  return infobip.post(`/calls/1/calls/${callId}/answer`, {});
+async function answerCall(callId, apiBaseUrl) {
+  return getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/answer`, {});
 }
 
-async function sayText(callId, text, language = 'lt-LT') {
-  return infobip.post(`/calls/1/calls/${callId}/say`, {
+async function sayText(callId, text, language = 'lt-LT', apiBaseUrl) {
+  return getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/say`, {
     text,
     language,
   });
@@ -55,21 +57,30 @@ async function captureDtmf(
     maxLength = 1,
     timeout = 10,
     terminator = '#',
-  } = {}
+  } = {},
+  apiBaseUrl
 ) {
-  return infobip.post(`/calls/1/calls/${callId}/capture/dtmf`, {
+  return getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/capture/dtmf`, {
     maxLength,
     timeout,
     terminator,
   });
 }
 
-async function hangupCall(callId) {
-  return infobip.post(`/calls/1/calls/${callId}/hangup`, {});
+async function hangupCall(callId, apiBaseUrl) {
+  return getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/hangup`, {});
 }
 
-async function createDialogToAdmin(parentCallId) {
-  return infobip.post('/calls/1/dialogs', {
+async function createDialogToAdmin(parentCallId, apiBaseUrl) {
+  if (!ADMIN_PHONE) {
+    throw new Error('ADMIN_PHONE is not configured');
+  }
+
+  if (!INFOBIP_VOICE_FROM) {
+    throw new Error('INFOBIP_VOICE_FROM is not configured');
+  }
+
+  return getInfobipClient(apiBaseUrl).post('/calls/1/dialogs', {
     parentCallId,
     childCallRequest: {
       endpoint: {
@@ -84,6 +95,11 @@ async function createDialogToAdmin(parentCallId) {
 }
 
 async function notifyAdminAboutCallback(fromNumber) {
+  if (!ADMIN_PHONE) {
+    console.warn('ADMIN_PHONE not set, callback SMS skipped');
+    return { skipped: true, reason: 'Missing ADMIN_PHONE' };
+  }
+
   const text =
     `Sanadenta VOICE MVP: perskambinti klientui ${fromNumber}. ` +
     `Jis pasirinko callback per voice meniu.`;
@@ -95,18 +111,45 @@ async function notifyAdminAboutCallback(fromNumber) {
   });
 }
 
-async function playMainMenu(callId) {
+function extractDigits(event) {
+  return (
+    event?.properties?.dtmf ||
+    event?.properties?.capturedDtmf ||
+    event?.properties?.digits ||
+    event?.dtmf ||
+    event?.digits ||
+    ''
+  );
+}
+
+function extractFromPhone(event) {
+  return (
+    event?.from?.phoneNumber ||
+    event?.from ||
+    event?.source?.phoneNumber ||
+    event?.caller?.phoneNumber ||
+    event?.properties?.call?.from ||
+    event?.properties?.call?.endpoint?.phoneNumber ||
+    ''
+  );
+}
+
+async function playMainMenu(callId, apiBaseUrl) {
   const text =
     'Sveiki, čia Sanadenta. ' +
     'Jei norite, kad jums perskambintume dėl registracijos, spauskite 1. ' +
     'Jei norite būti sujungti su administratore, spauskite 2.';
 
-  await sayText(callId, text, 'lt-LT');
-  await captureDtmf(callId, {
-    maxLength: 1,
-    timeout: 8,
-    terminator: '#',
-  });
+  await sayText(callId, text, 'lt-LT', apiBaseUrl);
+  await captureDtmf(
+    callId,
+    {
+      maxLength: 1,
+      timeout: 8,
+      terminator: '#',
+    },
+    apiBaseUrl
+  );
 }
 
 router.post('/call-received', async (req, res) => {
@@ -116,37 +159,43 @@ router.post('/call-received', async (req, res) => {
     const event = req.body || {};
     const type = event.type;
     const callId = event.callId;
-    const from = event.from?.phoneNumber || event.from || event.source?.phoneNumber;
-    const digits =
-      event.properties?.dtmf ||
-      event.properties?.capturedDtmf ||
-      event.properties?.digits ||
-      event.dtmf;
+    const from = extractFromPhone(event);
+    const digits = extractDigits(event);
+    const apiBaseUrl =
+      event?.properties?.apiBaseUrl ||
+      event?.properties?.call?.apiBaseUrl ||
+      INFOBIP_BASE_URL;
 
-    console.log('VOICE EVENT:', JSON.stringify(event, null, 2));
+    console.log('📞 Infobip voice event:', JSON.stringify(event, null, 2));
+    console.log('📡 Using Calls API base URL:', apiBaseUrl);
 
-    if (!callId || !type) return;
+    if (!callId || !type) {
+      console.warn('Voice event missing type or callId');
+      return;
+    }
 
     if (type === 'CALL_RECEIVED') {
+      await answerCall(callId, apiBaseUrl);
+
       if (!isWorkingHours()) {
-        await answerCall(callId);
         await sayText(
           callId,
           `Sveiki, čia Sanadenta. Šiuo metu klinika nedirba. ` +
             `Registracijai internetu apsilankykite ${PUBLIC_WEB_URL}. ` +
             `Ačiū už skambutį.`,
-          'lt-LT'
+          'lt-LT',
+          apiBaseUrl
         );
-        await hangupCall(callId);
+
+        await hangupCall(callId, apiBaseUrl);
         return;
       }
 
-      await answerCall(callId);
       return;
     }
 
     if (type === 'CALL_ESTABLISHED') {
-      await playMainMenu(callId);
+      await playMainMenu(callId, apiBaseUrl);
       return;
     }
 
@@ -155,15 +204,17 @@ router.post('/call-received', async (req, res) => {
 
       if (pressed === '1') {
         const safeFrom = normalizePhone(from || '');
+
         await notifyAdminAboutCallback(safeFrom || 'Nežinomas numeris');
 
         await sayText(
           callId,
           'Ačiū. Užfiksavome jūsų prašymą. Darbo metu jums perskambinsime.',
-          'lt-LT'
+          'lt-LT',
+          apiBaseUrl
         );
 
-        await hangupCall(callId);
+        await hangupCall(callId, apiBaseUrl);
         return;
       }
 
@@ -171,9 +222,11 @@ router.post('/call-received', async (req, res) => {
         await sayText(
           callId,
           'Jungiame su administratore. Prašome palaukti.',
-          'lt-LT'
+          'lt-LT',
+          apiBaseUrl
         );
-        await createDialogToAdmin(callId);
+
+        await createDialogToAdmin(callId, apiBaseUrl);
         return;
       }
 
@@ -182,9 +235,11 @@ router.post('/call-received', async (req, res) => {
         `Neteisingas pasirinkimas. ` +
           `Registracijai internetu apsilankykite ${PUBLIC_WEB_URL}. ` +
           `Jei reikia, paskambinkite dar kartą.`,
-        'lt-LT'
+        'lt-LT',
+        apiBaseUrl
       );
-      await hangupCall(callId);
+
+      await hangupCall(callId, apiBaseUrl);
       return;
     }
 
@@ -193,14 +248,16 @@ router.post('/call-received', async (req, res) => {
         callId,
         `Nepasirinkote jokio varianto. ` +
           `Registracijai internetu apsilankykite ${PUBLIC_WEB_URL}. Ačiū.`,
-        'lt-LT'
+        'lt-LT',
+        apiBaseUrl
       );
-      await hangupCall(callId);
+
+      await hangupCall(callId, apiBaseUrl);
       return;
     }
 
     if (type === 'CALL_FAILED') {
-      console.warn('CALL_FAILED:', event);
+      console.warn('CALL_FAILED:', JSON.stringify(event, null, 2));
       return;
     }
 
@@ -210,15 +267,30 @@ router.post('/call-received', async (req, res) => {
     }
 
     if (type === 'APPLICATION_TRANSFER_FAILED' || type === 'PARTICIPANT_JOINED_FAILED') {
-      console.warn('Transfer/join failed:', event);
+      console.warn('Transfer/join failed:', JSON.stringify(event, null, 2));
       return;
     }
   } catch (error) {
     console.error(
-      'VOICE WEBHOOK ERROR:',
+      '❌ Voice webhook error:',
       error?.response?.status,
-      error?.response?.data || error.message
+      JSON.stringify(error?.response?.data || {}, null, 2) || error.message
     );
+
+    const event = req.body || {};
+    const callId = event.callId;
+    const apiBaseUrl =
+      event?.properties?.apiBaseUrl ||
+      event?.properties?.call?.apiBaseUrl ||
+      INFOBIP_BASE_URL;
+
+    if (callId) {
+      try {
+        await hangupCall(callId, apiBaseUrl);
+      } catch (hangupError) {
+        console.error('❌ Hangup after error failed:', hangupError.message);
+      }
+    }
   }
 });
 

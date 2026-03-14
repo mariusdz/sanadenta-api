@@ -20,6 +20,7 @@ const { normalizePhone } = require('../utils/phone');
 const { sendInfobipSms } = require('../services/sms');
 
 const closedCalls = new Set();
+const menuCalls = new Set();
 
 function getInfobipClient(baseURL) {
   return axios.create({
@@ -34,7 +35,14 @@ function getInfobipClient(baseURL) {
 }
 
 function isWorkingHours() {
+  // TESTUI gali laikinai grąžinti true
   return true;
+
+  // Realus variantas:
+  // const now = DateTime.now().setZone(TIME_ZONE);
+  // const weekday = now.weekday;
+  // const hour = now.hour;
+  // return weekday >= 1 && weekday <= 5 && hour >= 8 && hour < 17;
 }
 
 async function answerCall(callId, apiBaseUrl) {
@@ -61,11 +69,15 @@ async function captureDtmf(
   } = {},
   apiBaseUrl
 ) {
-  return getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/capture/dtmf`, {
+  const payload = {
     maxLength,
     timeout,
     terminator,
-  });
+  };
+
+  console.log('DTMF PAYLOAD:', JSON.stringify(payload));
+
+  return getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/capture/dtmf`, payload);
 }
 
 async function hangupCall(callId, apiBaseUrl) {
@@ -135,24 +147,6 @@ function extractFromPhone(event) {
   );
 }
 
-async function playMainMenu(callId, apiBaseUrl) {
-  const text =
-    'Hello, this is Sanadenta. ' +
-    'If you want us to call you back for appointment registration, press 1. ' +
-    'If you want to be connected to the administrator, press 2.';
-
-  await sayText(callId, text, apiBaseUrl);
-  await captureDtmf(
-    callId,
-    {
-      maxLength: 1,
-      timeout: 8,
-      terminator: '#',
-    },
-    apiBaseUrl
-  );
-}
-
 router.post('/call-received', async (req, res) => {
   res.sendStatus(200);
 
@@ -189,7 +183,6 @@ router.post('/call-received', async (req, res) => {
           apiBaseUrl
         );
 
-        await hangupCall(callId, apiBaseUrl);
         return;
       }
 
@@ -198,16 +191,61 @@ router.post('/call-received', async (req, res) => {
 
     if (type === 'CALL_ESTABLISHED') {
       if (closedCalls.has(callId)) {
-        console.log(`ℹ️ Skipping main menu for closed-hours call: ${callId}`);
+        console.log(`ℹ️ Closed-hours call established: ${callId}`);
         return;
       }
 
-      await playMainMenu(callId, apiBaseUrl);
+      menuCalls.add(callId);
+
+      await sayText(
+        callId,
+        'Hello, this is Sanadenta. ' +
+          'If you want us to call you back for appointment registration, press 1. ' +
+          'If you want to be connected to the administrator, press 2.',
+        apiBaseUrl
+      );
+
+      return;
+    }
+
+    if (type === 'SAY_FINISHED') {
+      if (closedCalls.has(callId)) {
+        console.log(`ℹ️ Closing call after closed-hours message: ${callId}`);
+        await hangupCall(callId, apiBaseUrl);
+        return;
+      }
+
+      if (menuCalls.has(callId)) {
+        console.log(`ℹ️ Starting DTMF capture after menu prompt: ${callId}`);
+        await captureDtmf(
+          callId,
+          {
+            maxLength: 1,
+            timeout: 8,
+            terminator: '#',
+          },
+          apiBaseUrl
+        );
+        return;
+      }
+
       return;
     }
 
     if (type === 'DTMF_COLLECTED' || type === 'DTFM_CAPTURED') {
       const pressed = String(digits || '').trim();
+      const timedOut = Boolean(event?.properties?.timeout);
+
+      if (timedOut || !pressed) {
+        await sayText(
+          callId,
+          `No option was selected. Please register online at ${PUBLIC_WEB_URL}. Thank you.`,
+          apiBaseUrl
+        );
+        menuCalls.delete(callId);
+        closedCalls.add(callId); // kad po SAY_FINISHED uždarytų
+        return;
+      }
 
       if (pressed === '1') {
         const safeFrom = normalizePhone(from || '');
@@ -220,7 +258,8 @@ router.post('/call-received', async (req, res) => {
           apiBaseUrl
         );
 
-        await hangupCall(callId, apiBaseUrl);
+        menuCalls.delete(callId);
+        closedCalls.add(callId); // po SAY_FINISHED uždarys
         return;
       }
 
@@ -231,6 +270,9 @@ router.post('/call-received', async (req, res) => {
           apiBaseUrl
         );
 
+        menuCalls.delete(callId);
+        // dialog paleisim po SAY_FINISHED naudodami specialų markerį
+        event._connectAdmin = true;
         await createDialogToAdmin(callId, apiBaseUrl);
         return;
       }
@@ -241,7 +283,8 @@ router.post('/call-received', async (req, res) => {
         apiBaseUrl
       );
 
-      await hangupCall(callId, apiBaseUrl);
+      menuCalls.delete(callId);
+      closedCalls.add(callId);
       return;
     }
 
@@ -252,24 +295,27 @@ router.post('/call-received', async (req, res) => {
         apiBaseUrl
       );
 
-      await hangupCall(callId, apiBaseUrl);
+      menuCalls.delete(callId);
+      closedCalls.add(callId);
       return;
     }
 
     if (type === 'CALL_FAILED') {
       console.warn('CALL_FAILED:', JSON.stringify(event, null, 2));
       closedCalls.delete(callId);
+      menuCalls.delete(callId);
       return;
     }
 
     if (type === 'CALL_FINISHED') {
       console.log('CALL_FINISHED:', callId);
       closedCalls.delete(callId);
+      menuCalls.delete(callId);
       return;
     }
 
-    if (type === 'SAY_FINISHED' || type === 'PLAY_FINISHED') {
-      console.log(`${type}:`, callId);
+    if (type === 'PLAY_FINISHED') {
+      console.log('PLAY_FINISHED:', callId);
       return;
     }
 

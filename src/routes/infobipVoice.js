@@ -33,17 +33,17 @@ function getInfobipClient(baseURL) {
 
 function isWorkingHours() {
   const now = DateTime.now().setZone(TIME_ZONE);
-  const weekday = now.weekday; // 1=Monday, 7=Sunday
+  const weekday = now.weekday;
   const hour = now.hour;
 
-  const isWeekday = weekday >= 1 && weekday <= 5;
-  return isWeekday && hour >= 8 && hour < 17;
+  return weekday >= 1 && weekday <= 5 && hour >= 8 && hour < 17;
 }
 
 async function answerCall(callId, apiBaseUrl) {
   return getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/answer`, {});
 }
 
+// SVARBU: jokio language lauko
 async function sayText(callId, text, apiBaseUrl) {
   return getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/say`, {
     text,
@@ -139,7 +139,7 @@ async function playMainMenu(callId, apiBaseUrl) {
     'Jei norite, kad jums perskambintume dėl registracijos, spauskite 1. ' +
     'Jei norite būti sujungti su administratore, spauskite 2.';
 
-  await sayText(callId, text,  apiBaseUrl);
+  await sayText(callId, text, apiBaseUrl);
   await captureDtmf(
     callId,
     {
@@ -182,7 +182,6 @@ router.post('/call-received', async (req, res) => {
           `Sveiki, čia Sanadenta. Šiuo metu klinika nedirba. ` +
             `Registracijai internetu apsilankykite ${PUBLIC_WEB_URL}. ` +
             `Ačiū už skambutį.`,
-          
           apiBaseUrl
         );
 
@@ -209,7 +208,6 @@ router.post('/call-received', async (req, res) => {
         await sayText(
           callId,
           'Ačiū. Užfiksavome jūsų prašymą. Darbo metu jums perskambinsime.',
-          
           apiBaseUrl
         );
 
@@ -221,7 +219,6 @@ router.post('/call-received', async (req, res) => {
         await sayText(
           callId,
           'Jungiame su administratore. Prašome palaukti.',
-          
           apiBaseUrl
         );
 
@@ -234,7 +231,6 @@ router.post('/call-received', async (req, res) => {
         `Neteisingas pasirinkimas. ` +
           `Registracijai internetu apsilankykite ${PUBLIC_WEB_URL}. ` +
           `Jei reikia, paskambinkite dar kartą.`,
-        
         apiBaseUrl
       );
 
@@ -247,7 +243,6 @@ router.post('/call-received', async (req, res) => {
         callId,
         `Nepasirinkote jokio varianto. ` +
           `Registracijai internetu apsilankykite ${PUBLIC_WEB_URL}. Ačiū.`,
-        
         apiBaseUrl
       );
 

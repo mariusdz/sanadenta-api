@@ -34,11 +34,7 @@ function getInfobipClient(baseURL) {
 }
 
 function isWorkingHours() {
-  const now = DateTime.now().setZone(TIME_ZONE);
-  const weekday = now.weekday;
-  const hour = now.hour;
-
-  return weekday >= 1 && weekday <= 5 && hour >= 8 && hour < 17;
+  return true;
 }
 
 async function answerCall(callId, apiBaseUrl) {

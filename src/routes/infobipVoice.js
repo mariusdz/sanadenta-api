@@ -47,6 +47,7 @@ async function answerCall(callId, apiBaseUrl) {
 async function sayText(callId, text, apiBaseUrl) {
   return getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/say`, {
     text,
+    language: 'en',
   });
 }
 

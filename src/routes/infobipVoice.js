@@ -43,8 +43,6 @@ async function answerCall(callId, apiBaseUrl) {
   return getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/answer`, {});
 }
 
-// Infobip `say` reikalauja language, bet lietuviškas kodas stringa.
-// Testui naudojam 'en', kad veiktų visas flow.
 async function sayText(callId, text, apiBaseUrl) {
   const payload = {
     text,
@@ -73,7 +71,17 @@ async function captureDtmf(
 }
 
 async function hangupCall(callId, apiBaseUrl) {
-  return getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/hangup`, {});
+  try {
+    return await getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/hangup`, {});
+  } catch (error) {
+    // If call doesn't exist (404), just log and ignore - this is expected in some cases
+    if (error?.response?.status === 404) {
+      console.log(`ℹ️ Call ${callId} no longer exists, skipping hangup.`);
+      return { skipped: true, reason: 'call_not_found' };
+    }
+    // Re-throw other errors
+    throw error;
+  }
 }
 
 async function createDialogToAdmin(parentCallId, apiBaseUrl) {
@@ -158,6 +166,7 @@ async function playMainMenu(callId, apiBaseUrl) {
 }
 
 router.post('/call-received', async (req, res) => {
+  // Always respond with 200 immediately to acknowledge receipt
   res.sendStatus(200);
 
   try {
@@ -259,7 +268,8 @@ router.post('/call-received', async (req, res) => {
     }
 
     if (type === 'CALL_FINISHED') {
-      console.log('CALL_FINISHED:', callId);
+      console.log(`✅ CALL_FINISHED received for ${callId} - call already ended, no action needed`);
+      // IMPORTANT: Don't try to hangup here - the call is already finished
       return;
     }
 
@@ -288,7 +298,7 @@ router.post('/call-received', async (req, res) => {
       JSON.stringify(data, null, 2) || error.message
     );
 
-    // Jei skambutis jau pasibaigęs / neegzistuoja - daugiau nieko nebedarom
+    // Don't try to hangup on 404 errors - the call is already gone
     if (status === 404) {
       console.warn('ℹ️ Call no longer exists, skipping hangup.');
       return;
@@ -301,11 +311,17 @@ router.post('/call-received', async (req, res) => {
       event?.properties?.call?.apiBaseUrl ||
       INFOBIP_BASE_URL;
 
-    if (callId) {
+    // Only attempt hangup if we have a callId and it's not a 404 error
+    if (callId && status !== 404) {
       try {
         await hangupCall(callId, apiBaseUrl);
       } catch (hangupError) {
-        console.error('❌ Hangup after error failed:', hangupError.message);
+        // If hangup fails with 404, that's actually fine - call is already gone
+        if (hangupError?.response?.status === 404) {
+          console.log(`ℹ️ Call ${callId} already ended during error handling`);
+        } else {
+          console.error('❌ Hangup after error failed:', hangupError.message);
+        }
       }
     }
   }

@@ -44,7 +44,7 @@ async function answerCall(callId, apiBaseUrl) {
   return getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/answer`, {});
 }
 
-async function sayText(callId, text, language = 'lt-LT', apiBaseUrl) {
+async function sayText(callId, text, language = 'lt', apiBaseUrl) {
   return getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/say`, {
     text,
     language,
@@ -140,7 +140,7 @@ async function playMainMenu(callId, apiBaseUrl) {
     'Jei norite, kad jums perskambintume dėl registracijos, spauskite 1. ' +
     'Jei norite būti sujungti su administratore, spauskite 2.';
 
-  await sayText(callId, text, 'lt-LT', apiBaseUrl);
+  await sayText(callId, text, 'lt', apiBaseUrl);
   await captureDtmf(
     callId,
     {
@@ -183,7 +183,7 @@ router.post('/call-received', async (req, res) => {
           `Sveiki, čia Sanadenta. Šiuo metu klinika nedirba. ` +
             `Registracijai internetu apsilankykite ${PUBLIC_WEB_URL}. ` +
             `Ačiū už skambutį.`,
-          'lt-LT',
+          'lt',
           apiBaseUrl
         );
 
@@ -210,7 +210,7 @@ router.post('/call-received', async (req, res) => {
         await sayText(
           callId,
           'Ačiū. Užfiksavome jūsų prašymą. Darbo metu jums perskambinsime.',
-          'lt-LT',
+          'lt',
           apiBaseUrl
         );
 
@@ -222,7 +222,7 @@ router.post('/call-received', async (req, res) => {
         await sayText(
           callId,
           'Jungiame su administratore. Prašome palaukti.',
-          'lt-LT',
+          'lt',
           apiBaseUrl
         );
 
@@ -235,7 +235,7 @@ router.post('/call-received', async (req, res) => {
         `Neteisingas pasirinkimas. ` +
           `Registracijai internetu apsilankykite ${PUBLIC_WEB_URL}. ` +
           `Jei reikia, paskambinkite dar kartą.`,
-        'lt-LT',
+        'lt',
         apiBaseUrl
       );
 
@@ -248,7 +248,7 @@ router.post('/call-received', async (req, res) => {
         callId,
         `Nepasirinkote jokio varianto. ` +
           `Registracijai internetu apsilankykite ${PUBLIC_WEB_URL}. Ačiū.`,
-        'lt-LT',
+        'lt',
         apiBaseUrl
       );
 

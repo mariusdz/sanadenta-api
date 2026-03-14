@@ -43,12 +43,17 @@ async function answerCall(callId, apiBaseUrl) {
   return getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/answer`, {});
 }
 
-// SVARBU: jokio language lauko
+// Infobip `say` reikalauja language, bet lietuviškas kodas stringa.
+// Testui naudojam 'en', kad veiktų visas flow.
 async function sayText(callId, text, apiBaseUrl) {
-  return getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/say`, {
+  const payload = {
     text,
     language: 'en',
-  });
+  };
+
+  console.log('SAY PAYLOAD:', JSON.stringify(payload));
+
+  return getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/say`, payload);
 }
 
 async function captureDtmf(
@@ -136,9 +141,9 @@ function extractFromPhone(event) {
 
 async function playMainMenu(callId, apiBaseUrl) {
   const text =
-    'Sveiki, čia Sanadenta. ' +
-    'Jei norite, kad jums perskambintume dėl registracijos, spauskite 1. ' +
-    'Jei norite būti sujungti su administratore, spauskite 2.';
+    'Hello, this is Sanadenta. ' +
+    'If you want us to call you back for appointment registration, press 1. ' +
+    'If you want to be connected to the administrator, press 2.';
 
   await sayText(callId, text, apiBaseUrl);
   await captureDtmf(
@@ -167,6 +172,7 @@ router.post('/call-received', async (req, res) => {
       INFOBIP_BASE_URL;
 
     console.log('📞 Infobip voice event:', JSON.stringify(event, null, 2));
+    console.log(`📌 Event type: ${type}, callId: ${callId}`);
     console.log('📡 Using Calls API base URL:', apiBaseUrl);
 
     if (!callId || !type) {
@@ -180,9 +186,8 @@ router.post('/call-received', async (req, res) => {
       if (!isWorkingHours()) {
         await sayText(
           callId,
-          `Sveiki, čia Sanadenta. Šiuo metu klinika nedirba. ` +
-            `Registracijai internetu apsilankykite ${PUBLIC_WEB_URL}. ` +
-            `Ačiū už skambutį.`,
+          `Hello, this is Sanadenta. We are currently closed. ` +
+            `Please register online at ${PUBLIC_WEB_URL}. Thank you for your call.`,
           apiBaseUrl
         );
 
@@ -208,7 +213,7 @@ router.post('/call-received', async (req, res) => {
 
         await sayText(
           callId,
-          'Ačiū. Užfiksavome jūsų prašymą. Darbo metu jums perskambinsime.',
+          'Thank you. We have recorded your callback request. We will call you back during working hours.',
           apiBaseUrl
         );
 
@@ -219,7 +224,7 @@ router.post('/call-received', async (req, res) => {
       if (pressed === '2') {
         await sayText(
           callId,
-          'Jungiame su administratore. Prašome palaukti.',
+          'Connecting you to the administrator. Please wait.',
           apiBaseUrl
         );
 
@@ -229,9 +234,7 @@ router.post('/call-received', async (req, res) => {
 
       await sayText(
         callId,
-        `Neteisingas pasirinkimas. ` +
-          `Registracijai internetu apsilankykite ${PUBLIC_WEB_URL}. ` +
-          `Jei reikia, paskambinkite dar kartą.`,
+        `Invalid selection. Please visit ${PUBLIC_WEB_URL} to register online.`,
         apiBaseUrl
       );
 
@@ -242,8 +245,7 @@ router.post('/call-received', async (req, res) => {
     if (type === 'DTMF_CAPTURE_FAILED') {
       await sayText(
         callId,
-        `Nepasirinkote jokio varianto. ` +
-          `Registracijai internetu apsilankykite ${PUBLIC_WEB_URL}. Ačiū.`,
+        `No option was selected. Please register online at ${PUBLIC_WEB_URL}. Thank you.`,
         apiBaseUrl
       );
 
@@ -261,16 +263,36 @@ router.post('/call-received', async (req, res) => {
       return;
     }
 
-    if (type === 'APPLICATION_TRANSFER_FAILED' || type === 'PARTICIPANT_JOINED_FAILED') {
-      console.warn('Transfer/join failed:', JSON.stringify(event, null, 2));
+    if (type === 'SAY_FINISHED' || type === 'PLAY_FINISHED') {
+      console.log(`${type}:`, callId);
+      return;
+    }
+
+    if (
+      type === 'APPLICATION_TRANSFER_FAILED' ||
+      type === 'APPLICATION_TRANSFER_FINISHED' ||
+      type === 'DIALOG_FAILED' ||
+      type === 'DIALOG_FINISHED' ||
+      type === 'PARTICIPANT_JOIN_FAILED'
+    ) {
+      console.warn(`${type}:`, JSON.stringify(event, null, 2));
       return;
     }
   } catch (error) {
+    const status = error?.response?.status;
+    const data = error?.response?.data || {};
+
     console.error(
       '❌ Voice webhook error:',
-      error?.response?.status,
-      JSON.stringify(error?.response?.data || {}, null, 2) || error.message
+      status,
+      JSON.stringify(data, null, 2) || error.message
     );
+
+    // Jei skambutis jau pasibaigęs / neegzistuoja - daugiau nieko nebedarom
+    if (status === 404) {
+      console.warn('ℹ️ Call no longer exists, skipping hangup.');
+      return;
+    }
 
     const event = req.body || {};
     const callId = event.callId;

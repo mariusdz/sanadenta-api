@@ -198,7 +198,7 @@ router.post('/call-received', async (req, res) => {
       return;
     }
 
-    if (type === 'DTMF_COLLECTED') {
+    if (type === 'DTMF_COLLECTED' || type === 'DTFM_CAPTURED') {
       const pressed = String(digits || '').trim();
 
       if (pressed === '1') {

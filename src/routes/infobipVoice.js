@@ -35,13 +35,14 @@ function getInfobipClient(baseURL) {
   });
 }
 
+// TESTUI palik true.
+// Kai baigsi testus, grąžink realų darbo laiką.
 function isWorkingHours() {
-  // TESTUI gali laikinai palikti true
   return true;
 
   // Realus variantas:
   // const now = DateTime.now().setZone(TIME_ZONE);
-  // const weekday = now.weekday;
+  // const weekday = now.weekday; // 1=Mon ... 7=Sun
   // const hour = now.hour;
   // return weekday >= 1 && weekday <= 5 && hour >= 8 && hour < 17;
 }
@@ -65,7 +66,7 @@ async function captureDtmf(
   callId,
   {
     maxLength = 1,
-    timeout = 10,
+    timeout = 8,
     terminator = '#',
   } = {},
   apiBaseUrl
@@ -78,7 +79,10 @@ async function captureDtmf(
 
   console.log('DTMF PAYLOAD:', JSON.stringify(payload));
 
-  return getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/capture/dtmf`, payload);
+  return getInfobipClient(apiBaseUrl).post(
+    `/calls/1/calls/${callId}/capture/dtmf`,
+    payload
+  );
 }
 
 async function hangupCall(callId, apiBaseUrl) {
@@ -94,7 +98,7 @@ async function createDialogToAdmin(parentCallId, apiBaseUrl) {
     throw new Error('INFOBIP_VOICE_FROM is not configured');
   }
 
-  return getInfobipClient(apiBaseUrl).post('/calls/1/dialogs', {
+  const payload = {
     parentCallId,
     childCallRequest: {
       endpoint: {
@@ -105,7 +109,11 @@ async function createDialogToAdmin(parentCallId, apiBaseUrl) {
       applicationId: INFOBIP_CALLS_APPLICATION_ID,
       connectTimeout: 25,
     },
-  });
+  };
+
+  console.log('DIALOG PAYLOAD:', JSON.stringify(payload));
+
+  return getInfobipClient(apiBaseUrl).post('/calls/1/dialogs', payload);
 }
 
 async function notifyAdminAboutCallback(fromNumber) {
@@ -230,6 +238,14 @@ router.post('/call-received', async (req, res) => {
         console.log(`ℹ️ Connecting to admin after announcement: ${callId}`);
         actionAfterSay.delete(callId);
         menuCalls.delete(callId);
+
+        console.log('📲 Creating dialog to admin:', {
+          callId,
+          adminPhone: normalizePhone(ADMIN_PHONE),
+          from: INFOBIP_VOICE_FROM,
+          applicationId: INFOBIP_CALLS_APPLICATION_ID,
+        });
+
         await createDialogToAdmin(callId, apiBaseUrl);
         return;
       }
@@ -252,9 +268,16 @@ router.post('/call-received', async (req, res) => {
     }
 
     if (type === 'DTMF_CAPTURED') {
-      console.log('DTMF HANDLER:', { pressed, timedOut, rawDigits: digits });
       const pressed = String(digits || '').trim();
       const timedOut = Boolean(event?.properties?.timeout);
+
+      console.log('DTMF HANDLER:', {
+        pressed,
+        timedOut,
+        rawDigits: digits,
+        from,
+        callId,
+      });
 
       if (timedOut || !pressed) {
         await sayText(
@@ -262,8 +285,9 @@ router.post('/call-received', async (req, res) => {
           `No option was selected. Please register online at ${PUBLIC_WEB_URL}. Thank you.`,
           apiBaseUrl
         );
-        menuCalls.delete(callId);
+
         actionAfterSay.set(callId, 'hangup');
+        menuCalls.delete(callId);
         return;
       }
 
@@ -310,8 +334,21 @@ router.post('/call-received', async (req, res) => {
         apiBaseUrl
       );
 
-      menuCalls.delete(callId);
       actionAfterSay.set(callId, 'hangup');
+      menuCalls.delete(callId);
+      return;
+    }
+
+    if (
+      type === 'DIALOG_CREATED' ||
+      type === 'DIALOG_ESTABLISHED' ||
+      type === 'DIALOG_FAILED' ||
+      type === 'DIALOG_FINISHED' ||
+      type === 'PARTICIPANT_JOINING' ||
+      type === 'PARTICIPANT_JOINED' ||
+      type === 'PARTICIPANT_JOIN_FAILED'
+    ) {
+      console.log(`📟 ${type}:`, JSON.stringify(event, null, 2));
       return;
     }
 
@@ -338,10 +375,7 @@ router.post('/call-received', async (req, res) => {
 
     if (
       type === 'APPLICATION_TRANSFER_FAILED' ||
-      type === 'APPLICATION_TRANSFER_FINISHED' ||
-      type === 'DIALOG_FAILED' ||
-      type === 'DIALOG_FINISHED' ||
-      type === 'PARTICIPANT_JOIN_FAILED'
+      type === 'APPLICATION_TRANSFER_FINISHED'
     ) {
       console.warn(`${type}:`, JSON.stringify(event, null, 2));
       return;
@@ -350,31 +384,18 @@ router.post('/call-received', async (req, res) => {
     const status = error?.response?.status;
     const data = error?.response?.data || {};
 
+    console.error('❌ Voice webhook raw error object:', error);
+    console.error('❌ Voice webhook error message:', error?.message);
+    console.error('❌ Voice webhook error stack:', error?.stack);
     console.error(
-      '❌ Voice webhook error:',
+      '❌ Voice webhook error response:',
       status,
-      JSON.stringify(data, null, 2) || error.message
+      JSON.stringify(data, null, 2)
     );
 
-    if (status === 404) {
-      console.warn('ℹ️ Call no longer exists, skipping hangup.');
-      return;
-    }
-
-    const event = req.body || {};
-    const callId = event.callId;
-    const apiBaseUrl =
-      event?.properties?.apiBaseUrl ||
-      event?.properties?.call?.apiBaseUrl ||
-      INFOBIP_BASE_URL;
-
-    if (callId) {
-      try {
-        await hangupCall(callId, apiBaseUrl);
-      } catch (hangupError) {
-        console.error('❌ Hangup after error failed:', hangupError.message);
-      }
-    }
+    // DEBUG režimu skambučio papildomai neuždarinėjam,
+    // kad nepasislėptų tikroji klaida.
+    return;
   }
 });
 

@@ -22,6 +22,7 @@ const { sendInfobipSms } = require('../services/sms');
 const closedCalls = new Set();
 const menuCalls = new Set();
 const actionAfterSay = new Map(); // callId -> 'hangup' | 'connectAdmin'
+const pendingAdminDialogs = new Map(); // dialogId -> parentCallId
 
 function getInfobipClient(baseURL) {
   return axios.create({
@@ -113,7 +114,14 @@ async function createDialogToAdmin(parentCallId, apiBaseUrl) {
 
   console.log('DIALOG PAYLOAD:', JSON.stringify(payload));
 
-  return getInfobipClient(apiBaseUrl).post('/calls/1/dialogs', payload);
+  const response = await getInfobipClient(apiBaseUrl).post('/calls/1/dialogs', payload);
+
+  const dialogId = response?.data?.id || response?.data?.dialogId;
+  if (dialogId) {
+    pendingAdminDialogs.set(dialogId, parentCallId);
+  }
+
+  return response;
 }
 
 async function notifyAdminAboutCallback(fromNumber) {
@@ -174,12 +182,14 @@ router.post('/call-received', async (req, res) => {
     console.log(`📌 Event type: ${type}, callId: ${callId}`);
     console.log('📡 Using Calls API base URL:', apiBaseUrl);
 
-    if (!callId || !type) {
-      console.warn('Voice event missing type or callId');
+    if (!type) {
+      console.warn('Voice event missing type');
       return;
     }
 
     if (type === 'CALL_RECEIVED') {
+      if (!callId) return;
+
       await answerCall(callId, apiBaseUrl);
 
       if (!isWorkingHours()) {
@@ -199,6 +209,8 @@ router.post('/call-received', async (req, res) => {
     }
 
     if (type === 'CALL_ESTABLISHED') {
+      if (!callId) return;
+
       if (closedCalls.has(callId)) {
         console.log(`ℹ️ Closed-hours call established: ${callId}`);
         return;
@@ -218,6 +230,8 @@ router.post('/call-received', async (req, res) => {
     }
 
     if (type === 'SAY_FINISHED') {
+      if (!callId) return;
+
       if (closedCalls.has(callId)) {
         console.log(`ℹ️ Closing call after closed-hours message: ${callId}`);
         await hangupCall(callId, apiBaseUrl);
@@ -268,6 +282,8 @@ router.post('/call-received', async (req, res) => {
     }
 
     if (type === 'DTMF_CAPTURED') {
+      if (!callId) return;
+
       const pressed = String(digits || '').trim();
       const timedOut = Boolean(event?.properties?.timeout);
 
@@ -328,6 +344,8 @@ router.post('/call-received', async (req, res) => {
     }
 
     if (type === 'DTMF_CAPTURE_FAILED') {
+      if (!callId) return;
+
       await sayText(
         callId,
         `No option was selected. Please register online at ${PUBLIC_WEB_URL}. Thank you.`,
@@ -339,10 +357,44 @@ router.post('/call-received', async (req, res) => {
       return;
     }
 
+    if (type === 'DIALOG_FAILED') {
+      console.warn(`📟 DIALOG_FAILED:`, JSON.stringify(event, null, 2));
+
+      const dialogId = event?.dialogId || event?.properties?.dialog?.id;
+      const parentCallId =
+        pendingAdminDialogs.get(dialogId) ||
+        event?.properties?.dialog?.parentCall?.id;
+
+      const errorName = event?.properties?.errorCode?.name;
+
+      if (parentCallId && errorName === 'NO_ANSWER') {
+        await sayText(
+          parentCallId,
+          'The administrator is currently unavailable. We will call you back during working hours.',
+          apiBaseUrl
+        );
+
+        const parentFrom =
+          event?.properties?.dialog?.parentCall?.from ||
+          event?.properties?.dialog?.parentCall?.endpoint?.phoneNumber ||
+          '';
+
+        const safeFrom = normalizePhone(parentFrom || '');
+        await notifyAdminAboutCallback(safeFrom || 'Unknown number');
+
+        actionAfterSay.set(parentCallId, 'hangup');
+      }
+
+      if (dialogId) {
+        pendingAdminDialogs.delete(dialogId);
+      }
+
+      return;
+    }
+
     if (
       type === 'DIALOG_CREATED' ||
       type === 'DIALOG_ESTABLISHED' ||
-      type === 'DIALOG_FAILED' ||
       type === 'DIALOG_FINISHED' ||
       type === 'PARTICIPANT_JOINING' ||
       type === 'PARTICIPANT_JOINED' ||
@@ -354,17 +406,21 @@ router.post('/call-received', async (req, res) => {
 
     if (type === 'CALL_FAILED') {
       console.warn('CALL_FAILED:', JSON.stringify(event, null, 2));
-      closedCalls.delete(callId);
-      menuCalls.delete(callId);
-      actionAfterSay.delete(callId);
+      if (callId) {
+        closedCalls.delete(callId);
+        menuCalls.delete(callId);
+        actionAfterSay.delete(callId);
+      }
       return;
     }
 
     if (type === 'CALL_FINISHED') {
       console.log('CALL_FINISHED:', callId);
-      closedCalls.delete(callId);
-      menuCalls.delete(callId);
-      actionAfterSay.delete(callId);
+      if (callId) {
+        closedCalls.delete(callId);
+        menuCalls.delete(callId);
+        actionAfterSay.delete(callId);
+      }
       return;
     }
 
@@ -393,8 +449,6 @@ router.post('/call-received', async (req, res) => {
       JSON.stringify(data, null, 2)
     );
 
-    // DEBUG režimu skambučio papildomai neuždarinėjam,
-    // kad nepasislėptų tikroji klaida.
     return;
   }
 });

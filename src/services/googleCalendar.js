@@ -299,6 +299,38 @@ const getEventDateTime = (event) => {
   return dt.isValid ? dt : null;
 };
 
+const getAvailableDates = async ({
+  serviceName = 'Vizitas',
+  fromDate,
+  daysAhead = 60,
+}) => {
+  const startDay = fromDate
+    ? DateTime.fromISO(fromDate, { zone: TIME_ZONE }).startOf('day')
+    : DateTime.now().setZone(TIME_ZONE).startOf('day');
+
+  if (!startDay.isValid) {
+    throw new Error('Invalid fromDate');
+  }
+
+  const dates = [];
+
+  for (let i = 0; i <= daysAhead; i += 1) {
+    const current = startDay.plus({ days: i });
+    const dateStr = current.toISODate();
+
+    const slots = await getFreeSlots({
+      date: dateStr,
+      serviceName,
+    });
+
+    if (Array.isArray(slots) && slots.length > 0) {
+      dates.push(dateStr);
+    }
+  }
+
+  return dates;
+};
+
 module.exports = {
   getAuthInfo,
   getAuth,
@@ -314,5 +346,6 @@ module.exports = {
   getPatientPhone,
   getServiceName,
   getEventDateTime,
+  getAvailableDates,
   CALENDAR_ID,
 };

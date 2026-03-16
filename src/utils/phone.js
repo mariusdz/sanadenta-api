@@ -1,72 +1,84 @@
 // src/utils/phone.js
-const normalizePhone = (phone) => {
-  if (!phone) return '';
 
-  let cleaned = String(phone).trim().replace(/[^\d+]/g, '');
+function normalizePhone(input = '') {
+  if (!input) return '';
 
-  // 00370... -> +370...
-  if (cleaned.startsWith('00')) {
-    cleaned = `+${cleaned.slice(2)}`;
+  let phone = String(input).trim();
+
+  // paliekam tik + ir skaičius
+  phone = phone.replace(/[^\d+]/g, '');
+
+  // +37060880418 -> 37060880418
+  if (phone.startsWith('+370')) {
+    return phone.slice(1);
   }
 
-  // jau tarptautinis formatas
-  if (/^\+\d{7,15}$/.test(cleaned)) return cleaned;
-
-  // 3706... -> +3706...
-  if (/^370\d{8}$/.test(cleaned)) return `+${cleaned}`;
-
-  // LT vietinis naujas formatas 06... -> +3706...
-  if (/^0\d{8}$/.test(cleaned)) {
-    return `+37${cleaned}`;
+  // 37060880418 -> 37060880418
+  if (phone.startsWith('370') && phone.length === 11) {
+    return phone;
   }
 
-  return cleaned;
-};
+  // 860880418 -> 37060880418
+  if (phone.startsWith('8') && phone.length === 9) {
+    return `370${phone.slice(1)}`;
+  }
 
-const normalizeSmsText = (text) => {
-  return String(text || '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, ' ');
-};
+  // 60880418 -> 37060880418
+  if (phone.startsWith('6') && phone.length === 8) {
+    return `370${phone}`;
+  }
 
-const isYesReply = (text) => {
-  const t = normalizeSmsText(text);
+  // bet koks kitas tarptautinis numeris su +
+  if (phone.startsWith('+')) {
+    return phone.slice(1);
+  }
+
+  return phone;
+}
+
+function toDisplayPhone(input = '') {
+  const normalized = normalizePhone(input);
+
+  if (normalized.startsWith('370') && normalized.length === 11) {
+    return `+${normalized}`;
+  }
+
+  return normalized ? `+${normalized}` : '';
+}
+
+function isYesReply(text = '') {
+  const value = String(text).trim().toLowerCase();
+
   return [
     'taip',
-    'jo',
-    'j',
     't',
-    'ok',
-    'gerai',
-    'tinka',
-    'patvirtinu',
     'yes',
     'y',
-    'atvyksiu',
-    'busiu',
-  ].includes(t);
-};
+    'ok',
+    'gerai',
+    'patvirtinu',
+    'patvirtinta',
+  ].includes(value);
+}
 
-const isNoReply = (text) => {
-  const t = normalizeSmsText(text);
+function isNoReply(text = '') {
+  const value = String(text).trim().toLowerCase();
+
   return [
     'ne',
     'n',
     'no',
-    'negaliu',
-    'neatvyksiu',
-    'nebusiu',
-    'netinka',
+    'cancel',
     'atsaukiu',
     'atšaukiu',
-    'cancel',
-  ].includes(t);
-};
+    'atsaukti',
+    'atšaukti',
+  ].includes(value);
+}
 
 module.exports = {
   normalizePhone,
-  normalizeSmsText,
+  toDisplayPhone,
   isYesReply,
   isNoReply,
 };

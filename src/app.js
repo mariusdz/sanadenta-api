@@ -7,6 +7,7 @@ const bookingRoutes = require('./routes/booking');
 const infobipRoutes = require('./routes/infobip');
 const infobipVoiceRoutes = require('./routes/infobipVoice');
 const remindersRoutes = require('./routes/reminders');
+const availableDatesRoutes = require('./routes/availableDates');
 
 const { testCalendarAccess } = require('./services/googleCalendar');
 
@@ -37,6 +38,7 @@ app.get('/', (req, res) => {
       '/infobip/inbound-sms',
       '/run-reminders-now',
       '/test-calendar',
+      '/available-dates',
       ...(process.env.NODE_ENV !== 'production' ? ['/debug/auth'] : []),
     ],
   });
@@ -49,6 +51,7 @@ app.use('/create-booking', bookingRoutes);
 app.use('/infobip', infobipRoutes);
 app.use('/infobip', infobipVoiceRoutes);
 app.use('/', remindersRoutes);
+app.use('/available-dates', availableDatesRoutes);
 
 // Debug route'ai tik development aplinkoje
 if (process.env.NODE_ENV !== 'production') {

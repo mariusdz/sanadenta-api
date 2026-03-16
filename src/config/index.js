@@ -23,6 +23,10 @@ module.exports = {
     process.env.INFOBIP_SMS_FROM ||
     'SANADENTA',
 
+  INFOBIP_2WAY_FROM:
+    process.env.INFOBIP_2WAY_FROM ||
+    '37068000134',
+
   INFOBIP_CALLS_APPLICATION_ID:
     process.env.INFOBIP_CALLS_APPLICATION_ID || '',
   INFOBIP_CALLS_CONFIGURATION_ID:

@@ -1,16 +1,21 @@
+// src/services/sms.js
 const {
   INFOBIP_API_KEY,
   INFOBIP_BASE_URL,
   INFOBIP_SMS_FROM,
   INFOBIP_CONFIRMATION_FROM,
+  INFOBIP_2WAY_FROM,
   ADMIN_PHONE,
 } = require('../config');
 
 const { normalizePhone } = require('../utils/phone');
 const { formatHumanDateTime } = require('../utils/dateTime');
 
-const getConfirmationSender = () => INFOBIP_CONFIRMATION_FROM || INFOBIP_SMS_FROM;
-const getReminderSender = () => INFOBIP_SMS_FROM || INFOBIP_CONFIRMATION_FROM;
+const getConfirmationSender = () =>
+  INFOBIP_CONFIRMATION_FROM || INFOBIP_SMS_FROM || INFOBIP_2WAY_FROM;
+
+const getReminderSender = () =>
+  INFOBIP_2WAY_FROM || INFOBIP_CONFIRMATION_FROM || INFOBIP_SMS_FROM;
 
 const canSendSms = () =>
   Boolean(INFOBIP_API_KEY && INFOBIP_BASE_URL && getConfirmationSender());
@@ -24,7 +29,7 @@ const sendInfobipSms = async ({ from, to, text }) => {
   const normalizedTo = normalizePhone(to);
 
   if (!normalizedTo) {
-    throw new Error('Invalid phone number for SMS');
+    throw new Error(`Invalid phone number for SMS: ${to}`);
   }
 
   if (!from) {

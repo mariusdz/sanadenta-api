@@ -17,6 +17,7 @@ module.exports = {
 
   INFOBIP_API_KEY: process.env.INFOBIP_API_KEY || '',
   INFOBIP_BASE_URL: process.env.INFOBIP_BASE_URL || '',
+
   INFOBIP_SMS_FROM: process.env.INFOBIP_SMS_FROM || '',
   INFOBIP_CONFIRMATION_FROM:
     process.env.INFOBIP_CONFIRMATION_FROM ||
@@ -26,6 +27,10 @@ module.exports = {
   INFOBIP_2WAY_FROM:
     process.env.INFOBIP_2WAY_FROM ||
     '37068000134',
+
+  INFOBIP_DELIVERY_REPORT_URL:
+    process.env.INFOBIP_DELIVERY_REPORT_URL ||
+    'https://sanadenta-api.onrender.com/infobip/delivery-report',
 
   INFOBIP_CALLS_APPLICATION_ID:
     process.env.INFOBIP_CALLS_APPLICATION_ID || '',

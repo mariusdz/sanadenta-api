@@ -24,6 +24,7 @@ const {
 const { sendAdminCancellationSms } = require('../services/sms');
 const { clearFreeSlotsCache } = require('../utils/cache');
 
+// Inbound SMS webhook: pacientas atrašo TAIP / NE
 router.post('/inbound-sms', async (req, res) => {
   try {
     console.log('📩 Inbound SMS webhook:', JSON.stringify(req.body, null, 2));
@@ -139,6 +140,59 @@ router.post('/inbound-sms', async (req, res) => {
     return res.json({ ok: true });
   } catch (error) {
     console.error('❌ Inbound SMS processing error:', error);
+
+    return res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
+});
+
+// Delivery report webhook: matysi galutinį SMS statusą
+router.post('/delivery-report', async (req, res) => {
+  try {
+    console.log('📬 Infobip delivery report:', JSON.stringify(req.body, null, 2));
+
+    const reports = req.body?.results || req.body?.messages || req.body?.reports || [];
+
+    if (!Array.isArray(reports) || reports.length === 0) {
+      return res.json({
+        ok: true,
+        message: 'No delivery report payload',
+      });
+    }
+
+    for (const report of reports) {
+      const messageId = report?.messageId || report?.bulkId || 'unknown';
+      const to = report?.to || report?.destination || '';
+      const statusName =
+        report?.status?.name ||
+        report?.status?.groupName ||
+        report?.status?.description ||
+        'UNKNOWN';
+      const statusDescription = report?.status?.description || '';
+      const errorGroup =
+        report?.error?.groupName ||
+        report?.error?.groupId ||
+        null;
+      const errorName =
+        report?.error?.name ||
+        report?.error?.description ||
+        null;
+
+      console.log('📦 DLR item:', {
+        messageId,
+        to,
+        statusName,
+        statusDescription,
+        errorGroup,
+        errorName,
+      });
+    }
+
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error('❌ Delivery report processing error:', error);
 
     return res.status(500).json({
       ok: false,

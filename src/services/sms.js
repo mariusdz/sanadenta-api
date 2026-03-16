@@ -5,6 +5,7 @@ const {
   INFOBIP_SMS_FROM,
   INFOBIP_CONFIRMATION_FROM,
   INFOBIP_2WAY_FROM,
+  INFOBIP_DELIVERY_REPORT_URL,
   ADMIN_PHONE,
 } = require('../config');
 
@@ -42,6 +43,8 @@ const sendInfobipSms = async ({ from, to, text }) => {
         from,
         destinations: [{ to: normalizedTo }],
         text,
+        notifyUrl: INFOBIP_DELIVERY_REPORT_URL,
+        notifyContentType: 'application/json',
       },
     ],
   };
@@ -50,6 +53,7 @@ const sendInfobipSms = async ({ from, to, text }) => {
     from,
     to: normalizedTo,
     textLength: text.length,
+    notifyUrl: INFOBIP_DELIVERY_REPORT_URL,
   });
 
   const response = await fetch(`${INFOBIP_BASE_URL}/sms/2/text/advanced`, {

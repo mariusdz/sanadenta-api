@@ -21,6 +21,7 @@ const { sendInfobipSms } = require('../services/sms');
 
 const closedCalls = new Set();
 const menuCalls = new Set();
+const actionAfterSay = new Map(); // callId -> 'hangup' | 'connectAdmin'
 
 function getInfobipClient(baseURL) {
   return axios.create({
@@ -35,7 +36,7 @@ function getInfobipClient(baseURL) {
 }
 
 function isWorkingHours() {
-  // TESTUI gali laikinai grąžinti true
+  // TESTUI gali laikinai palikti true
   return true;
 
   // Realus variantas:
@@ -215,6 +216,24 @@ router.post('/call-received', async (req, res) => {
         return;
       }
 
+      const nextAction = actionAfterSay.get(callId);
+
+      if (nextAction === 'hangup') {
+        console.log(`ℹ️ Hanging up after confirmation message: ${callId}`);
+        actionAfterSay.delete(callId);
+        menuCalls.delete(callId);
+        await hangupCall(callId, apiBaseUrl);
+        return;
+      }
+
+      if (nextAction === 'connectAdmin') {
+        console.log(`ℹ️ Connecting to admin after announcement: ${callId}`);
+        actionAfterSay.delete(callId);
+        menuCalls.delete(callId);
+        await createDialogToAdmin(callId, apiBaseUrl);
+        return;
+      }
+
       if (menuCalls.has(callId)) {
         console.log(`ℹ️ Starting DTMF capture after menu prompt: ${callId}`);
         await captureDtmf(
@@ -243,14 +262,14 @@ router.post('/call-received', async (req, res) => {
           apiBaseUrl
         );
         menuCalls.delete(callId);
-        closedCalls.add(callId); // kad po SAY_FINISHED uždarytų
+        actionAfterSay.set(callId, 'hangup');
         return;
       }
 
       if (pressed === '1') {
         const safeFrom = normalizePhone(from || '');
 
-        await notifyAdminAboutCallback(safeFrom || 'Nežinomas numeris');
+        await notifyAdminAboutCallback(safeFrom || 'Unknown number');
 
         await sayText(
           callId,
@@ -258,8 +277,7 @@ router.post('/call-received', async (req, res) => {
           apiBaseUrl
         );
 
-        menuCalls.delete(callId);
-        closedCalls.add(callId); // po SAY_FINISHED uždarys
+        actionAfterSay.set(callId, 'hangup');
         return;
       }
 
@@ -270,10 +288,7 @@ router.post('/call-received', async (req, res) => {
           apiBaseUrl
         );
 
-        menuCalls.delete(callId);
-        // dialog paleisim po SAY_FINISHED naudodami specialų markerį
-        event._connectAdmin = true;
-        await createDialogToAdmin(callId, apiBaseUrl);
+        actionAfterSay.set(callId, 'connectAdmin');
         return;
       }
 
@@ -283,8 +298,7 @@ router.post('/call-received', async (req, res) => {
         apiBaseUrl
       );
 
-      menuCalls.delete(callId);
-      closedCalls.add(callId);
+      actionAfterSay.set(callId, 'hangup');
       return;
     }
 
@@ -296,7 +310,7 @@ router.post('/call-received', async (req, res) => {
       );
 
       menuCalls.delete(callId);
-      closedCalls.add(callId);
+      actionAfterSay.set(callId, 'hangup');
       return;
     }
 
@@ -304,6 +318,7 @@ router.post('/call-received', async (req, res) => {
       console.warn('CALL_FAILED:', JSON.stringify(event, null, 2));
       closedCalls.delete(callId);
       menuCalls.delete(callId);
+      actionAfterSay.delete(callId);
       return;
     }
 
@@ -311,6 +326,7 @@ router.post('/call-received', async (req, res) => {
       console.log('CALL_FINISHED:', callId);
       closedCalls.delete(callId);
       menuCalls.delete(callId);
+      actionAfterSay.delete(callId);
       return;
     }
 

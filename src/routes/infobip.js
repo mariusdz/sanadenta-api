@@ -1,152 +1,95 @@
-// src/routes/infobip.js
-const express = require('express');
-const router = express.Router();
+// src/services/sms.js
+const axios = require('axios');
 const { DateTime } = require('luxon');
-
+const { normalizePhone } = require('../utils/phone');
 const { TIME_ZONE } = require('../config');
 
-const {
-  getCalendarClient,
-  getPatientPhone,
-  getReplyStatus,
-  getServiceName,
-  patchEventPrivateMeta,
-  getEventDateTime,
-  CALENDAR_ID,
-} = require('../services/googleCalendar');
+const INFOBIP_BASE_URL = process.env.INFOBIP_BASE_URL;
+const INFOBIP_API_KEY = process.env.INFOBIP_API_KEY;
 
-const {
-  normalizePhone,
-  isYesReply,
-  isNoReply,
-} = require('../utils/phone');
+// šitą naudok priminimams, į kuriuos pacientas gali atrašyti
+const INFOBIP_2WAY_FROM = process.env.INFOBIP_2WAY_FROM || '37068000134';
 
-const { sendAdminCancellationSms } = require('../services/sms');
-const { clearFreeSlotsCache } = require('../utils/cache');
+// jei turi atskirą senderį one-way žinutėms
+const INFOBIP_1WAY_FROM = process.env.INFOBIP_1WAY_FROM || 'Sanadenta';
 
-// Inbound SMS webhook
-router.post('/inbound-sms', async (req, res) => {
-  try {
-    console.log('📩 Inbound SMS webhook:', JSON.stringify(req.body, null, 2));
+async function sendSms({ to, text, from }) {
+  const normalizedTo = normalizePhone(to);
 
-    const messages = req.body?.results || req.body?.messages || [];
-
-    if (!Array.isArray(messages) || messages.length === 0) {
-      return res.json({
-        ok: true,
-        message: 'No SMS payload',
-      });
-    }
-
-    const calendar = getCalendarClient();
-    const now = DateTime.now().setZone(TIME_ZONE);
-
-    for (const sms of messages) {
-      const from = normalizePhone(sms.from || sms.sender || '');
-      const text = String(sms.text || sms.message || '').trim();
-
-      if (!from || !text) {
-        continue;
-      }
-
-      const response = await calendar.events.list({
-        calendarId: CALENDAR_ID,
-        timeMin: now.minus({ days: 2 }).toISO(),
-        timeMax: now.plus({ days: 30 }).toISO(),
-        singleEvents: true,
-        orderBy: 'startTime',
-        maxResults: 2500,
-      });
-
-      const matchingEvents = (response.data.items || []).filter((event) => {
-        if (event.status === 'cancelled') return false;
-        if (!event.start?.dateTime) return false;
-
-        return getPatientPhone(event) === from;
-      });
-
-      if (matchingEvents.length === 0) {
-        console.log(`⚠️ No matching event found for phone ${from}`);
-        continue;
-      }
-
-      const sortedEvents = matchingEvents.sort((a, b) => {
-        const aDt = getEventDateTime(a)?.toMillis() || 0;
-        const bDt = getEventDateTime(b)?.toMillis() || 0;
-        return aDt - bDt;
-      });
-
-      const targetEvent =
-        sortedEvents.find((event) => {
-          const eventDT = getEventDateTime(event);
-          if (!eventDT) return false;
-
-          return eventDT >= now.minus({ hours: 12 });
-        }) || sortedEvents[0];
-
-      const eventDT = getEventDateTime(targetEvent);
-      if (!eventDT) {
-        console.log(`⚠️ Could not parse event datetime for event ${targetEvent.id}`);
-        continue;
-      }
-
-      const currentReplyStatus = getReplyStatus(targetEvent);
-
-      if (currentReplyStatus === 'no') {
-        console.log(`ℹ️ Event ${targetEvent.id} already cancelled`);
-        continue;
-      }
-
-      if (isYesReply(text)) {
-        await patchEventPrivateMeta(calendar, targetEvent.id, {
-          replyStatus: 'yes',
-          replyReceivedAt: now.toISO(),
-        });
-
-        console.log(`✅ Patient confirmed event ${targetEvent.id}`);
-        continue;
-      }
-
-      if (isNoReply(text)) {
-        await patchEventPrivateMeta(calendar, targetEvent.id, {
-          replyStatus: 'no',
-          replyReceivedAt: now.toISO(),
-        });
-
-        await calendar.events.delete({
-          calendarId: CALENDAR_ID,
-          eventId: targetEvent.id,
-        });
-
-        clearFreeSlotsCache();
-
-        console.log(`🗑️ Event deleted after patient cancellation: ${targetEvent.id}`);
-
-        try {
-          await sendAdminCancellationSms({
-            patientPhone: from,
-            dateTime: eventDT,
-            service: getServiceName(targetEvent) || targetEvent.summary || 'Vizitas',
-          });
-        } catch (adminSmsError) {
-          console.error('⚠️ Admin SMS failed:', adminSmsError.message);
-        }
-
-        continue;
-      }
-
-      console.log(`ℹ️ Unknown SMS reply ignored from ${from}: "${text}"`);
-    }
-
-    return res.json({ ok: true });
-  } catch (error) {
-    console.error('❌ Inbound SMS processing error:', error);
-
-    return res.status(500).json({
-      ok: false,
-      error: error.message,
-    });
+  if (!normalizedTo) {
+    throw new Error(`Invalid destination phone: ${to}`);
   }
-});
 
-module.exports = router;
+  const payload = {
+    messages: [
+      {
+        from: from || INFOBIP_2WAY_FROM,
+        destinations: [{ to: normalizedTo }],
+        text,
+      },
+    ],
+  };
+
+  const response = await axios.post(
+    `${INFOBIP_BASE_URL}/sms/2/text/advanced`,
+    payload,
+    {
+      headers: {
+        Authorization: `App ${INFOBIP_API_KEY}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      timeout: 15000,
+    }
+  );
+
+  console.log('📤 Infobip SMS response:', JSON.stringify(response.data, null, 2));
+  return response.data;
+}
+
+async function sendAppointmentReminderSms({ patientPhone, dateTime, service }) {
+  const dt = DateTime.fromISO(dateTime, { zone: TIME_ZONE });
+
+  const formatted = dt.toFormat('yyyy-LL-dd HH:mm');
+
+  const text =
+    `Sanadenta: primename apie Jusu vizita ${formatted}` +
+    (service ? ` (${service})` : '') +
+    `. Atsakykite TAIP patvirtinimui arba NE atsaukimui.`;
+
+  return sendSms({
+    to: patientPhone,
+    from: INFOBIP_2WAY_FROM, // svarbu dėl inbound reply
+    text,
+  });
+}
+
+async function sendAdminCancellationSms({ patientPhone, dateTime, service }) {
+  const dtText =
+    typeof dateTime?.toFormat === 'function'
+      ? dateTime.toFormat('yyyy-LL-dd HH:mm')
+      : String(dateTime);
+
+  const adminPhone = normalizePhone(process.env.ADMIN_PHONE || '');
+
+  if (!adminPhone) {
+    console.warn('⚠️ ADMIN_PHONE not configured, skipping admin SMS');
+    return;
+  }
+
+  const text =
+    `Pacientas atsauke vizita. Tel: ${patientPhone}, laikas: ${dtText}` +
+    (service ? `, paslauga: ${service}` : '');
+
+  return sendSms({
+    to: adminPhone,
+    from: INFOBIP_1WAY_FROM,
+    text,
+  });
+}
+
+module.exports = {
+  sendSms,
+  sendAppointmentReminderSms,
+  sendAdminCancellationSms,
+};

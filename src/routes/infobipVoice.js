@@ -251,7 +251,8 @@ router.post('/call-received', async (req, res) => {
       return;
     }
 
-    if (type === 'DTMF_COLLECTED' || type === 'DTFM_CAPTURED') {
+    if (type === 'DTMF_CAPTURED') {
+      console.log('DTMF HANDLER:', { pressed, timedOut, rawDigits: digits });
       const pressed = String(digits || '').trim();
       const timedOut = Boolean(event?.properties?.timeout);
 

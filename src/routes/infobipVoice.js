@@ -107,7 +107,7 @@ async function createDialogToAdmin(parentCallId, apiBaseUrl) {
       },
       from: INFOBIP_VOICE_FROM,
       applicationId: INFOBIP_CALLS_APPLICATION_ID,
-      connectTimeout: 25,
+      connectTimeout: 40,
     },
   };
 

@@ -12,7 +12,6 @@ const {
   INFOBIP_SMS_FROM,
   INFOBIP_CONFIRMATION_FROM,
   ADMIN_PHONE,
-  PUBLIC_WEB_URL,
   TIME_ZONE,
 } = require('../config');
 
@@ -38,6 +37,7 @@ function getInfobipClient(baseURL) {
 }
 
 // TESTUI palik true.
+// Kai baigsi testus, grąžink realų darbo laiką.
 function isWorkingHours() {
   return true;
 
@@ -457,6 +457,14 @@ router.post('/call-received', async (req, res) => {
       type === 'PARTICIPANT_JOIN_FAILED'
     ) {
       console.log(`📟 ${type}:`, JSON.stringify(event, null, 2));
+      return;
+    }
+
+    if (
+      type === 'APPLICATION_TRANSFER_FAILED' ||
+      type === 'APPLICATION_TRANSFER_FINISHED'
+    ) {
+      console.warn(`${type}:`, JSON.stringify(event, null, 2));
       return;
     }
 

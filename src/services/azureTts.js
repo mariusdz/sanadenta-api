@@ -24,11 +24,17 @@ function hashText(text) {
   return crypto.createHash('sha1').update(text, 'utf8').digest('hex');
 }
 
-function buildSsml(text, voiceName) {
-  const escaped = String(text)
+function escapeXml(text) {
+  return String(text)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function buildSsml(text, voiceName) {
+  const escaped = escapeXml(text);
 
   return `
 <speak version="1.0" xml:lang="lt-LT">
@@ -55,8 +61,6 @@ function createSpeechConfig() {
   );
 
   speechConfig.speechSynthesisVoiceName = AZURE_TTS_VOICE;
-
-  // 16kHz mono wav - saugu voice scenarijams
   speechConfig.speechSynthesisOutputFormat =
     sdk.SpeechSynthesisOutputFormat.Riff16Khz16BitMonoPcm;
 
@@ -91,9 +95,7 @@ async function synthesizeTextToPublicFile(text, keyPrefix = 'tts') {
       (result) => {
         synthesizer.close();
 
-        if (
-          result.reason === sdk.ResultReason.SynthesizingAudioCompleted
-        ) {
+        if (result.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
           resolve();
           return;
         }

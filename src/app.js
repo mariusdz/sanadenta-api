@@ -4,7 +4,7 @@ const path = require('path');
 
 const healthRoutes = require('./routes/health');
 const freeSlotsRoutes = require('./routes/freeSlots');
-const createBookingRoutes = require('./routes/createBooking');
+const bookingRoutes = require('./routes/booking');
 const availableDatesRoutes = require('./routes/availableDates');
 const infobipRoutes = require('./routes/infobip');
 const infobipVoiceRoutes = require('./routes/infobipVoice');
@@ -24,13 +24,17 @@ app.use(cors({
     'https://sanadenta-api.onrender.com',
     'http://localhost:3000',
     'http://localhost:3001',
+    'http://localhost:5500',
+    'http://127.0.0.1:5500',
   ],
+  methods: ['GET', 'POST', 'OPTIONS'],
   credentials: true,
+  allowedHeaders: ['Content-Type', 'x-api-key'],
 }));
 
 app.use('/health', healthRoutes);
 app.use('/free-slots', freeSlotsRoutes);
-app.use('/create-booking', createBookingRoutes);
+app.use('/create-booking', bookingRoutes);
 app.use('/available-dates', availableDatesRoutes);
 app.use('/infobip', infobipRoutes);
 app.use('/infobip', infobipVoiceRoutes);

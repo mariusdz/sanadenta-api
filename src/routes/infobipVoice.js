@@ -14,12 +14,12 @@ const {
   ADMIN_PHONE,
   PUBLIC_WEB_URL,
   TIME_ZONE,
+  VOICE_LANGUAGE,
 } = require('../config');
 
 const { normalizePhone } = require('../utils/phone');
 const { sendInfobipSms } = require('../services/sms');
 
-const VOICE_LANGUAGE = 'lt-LT';
 
 const closedCalls = new Set();
 const menuCalls = new Set();

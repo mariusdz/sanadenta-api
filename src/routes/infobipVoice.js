@@ -59,7 +59,11 @@ async function answerCall(callId, apiBaseUrl) {
 
 async function playAudioFromUrl(callId, fileUrl, apiBaseUrl) {
   const payload = {
-    fileUrl,
+    loopCount: 1,
+    content: {
+      type: 'URL',
+      url: fileUrl,
+    },
   };
 
   console.log('PLAY URL:', `${apiBaseUrl || INFOBIP_BASE_URL}/calls/1/calls/${callId}/play`);
@@ -224,9 +228,6 @@ router.post('/call-received', async (req, res) => {
     const from = extractFromPhone(event);
     const digits = extractDigits(event);
 
-    // SVARBIAUSIAS PATAISYMAS:
-    // nenaudojam event.properties.apiBaseUrl,
-    // o visada imam savo regioninį INFOBIP_BASE_URL iš config/.env
     const apiBaseUrl = INFOBIP_BASE_URL;
 
     console.log('📞 Infobip voice event:', JSON.stringify(event, null, 2));

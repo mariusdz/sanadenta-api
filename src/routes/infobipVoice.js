@@ -223,10 +223,11 @@ router.post('/call-received', async (req, res) => {
     const callId = event.callId;
     const from = extractFromPhone(event);
     const digits = extractDigits(event);
-    const apiBaseUrl =
-      event?.properties?.apiBaseUrl ||
-      event?.properties?.call?.apiBaseUrl ||
-      INFOBIP_BASE_URL;
+
+    // SVARBIAUSIAS PATAISYMAS:
+    // nenaudojam event.properties.apiBaseUrl,
+    // o visada imam savo regioninį INFOBIP_BASE_URL iš config/.env
+    const apiBaseUrl = INFOBIP_BASE_URL;
 
     console.log('📞 Infobip voice event:', JSON.stringify(event, null, 2));
     console.log(`📌 Event type: ${type}, callId: ${callId}`);

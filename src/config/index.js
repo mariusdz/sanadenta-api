@@ -1,4 +1,3 @@
-// src/config/index.js
 const dotenv = require('dotenv');
 dotenv.config();
 
@@ -41,10 +40,14 @@ module.exports = {
     process.env.INFOBIP_SMS_FROM ||
     '',
 
+  VOICE_LANGUAGE: process.env.VOICE_LANGUAGE || 'lt-LT',
+
   ADMIN_PHONE: process.env.ADMIN_PHONE || '',
   PUBLIC_WEB_URL: process.env.PUBLIC_WEB_URL || 'https://sanadenta.lt',
 
-  REMINDER_CHECK_INTERVAL_MS: Number(process.env.REMINDER_CHECK_INTERVAL_MS || 300000),
+  REMINDER_CHECK_INTERVAL_MS: Number(
+    process.env.REMINDER_CHECK_INTERVAL_MS || 300000
+  ),
   FREE_SLOTS_CACHE_MS: Number(process.env.FREE_SLOTS_CACHE_MS || 30000),
 
   WORK_HOURS: {

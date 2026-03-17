@@ -19,6 +19,8 @@ const {
 const { normalizePhone } = require('../utils/phone');
 const { sendInfobipSms } = require('../services/sms');
 
+const VOICE_LANGUAGE = 'lt-LT';
+
 const closedCalls = new Set();
 const menuCalls = new Set();
 const actionAfterSay = new Map(); // callId -> 'hangup' | 'connectAdmin'
@@ -55,7 +57,7 @@ async function answerCall(callId, apiBaseUrl) {
 async function sayText(callId, text, apiBaseUrl) {
   const payload = {
     text,
-    language: 'en',
+    language: VOICE_LANGUAGE,
   };
 
   console.log('SAY PAYLOAD:', JSON.stringify(payload));
@@ -132,7 +134,7 @@ async function notifyAdminAboutCallback(fromNumber) {
 
   const text =
     `Sanadenta VOICE MVP: perskambinti klientui ${fromNumber}. ` +
-    `Jis pasirinko callback per voice meniu.`;
+    `Jis pasirinko perskambinimą per voice meniu.`;
 
   return sendInfobipSms({
     from: INFOBIP_CONFIRMATION_FROM || INFOBIP_SMS_FROM,
@@ -162,6 +164,13 @@ function extractFromPhone(event) {
     event?.properties?.call?.endpoint?.phoneNumber ||
     ''
   );
+}
+
+function cleanupCall(callId) {
+  if (!callId) return;
+  closedCalls.delete(callId);
+  menuCalls.delete(callId);
+  actionAfterSay.delete(callId);
 }
 
 router.post('/call-received', async (req, res) => {
@@ -197,8 +206,8 @@ router.post('/call-received', async (req, res) => {
 
         await sayText(
           callId,
-          `Hello, this is Sanadenta. We are currently closed. ` +
-            `Please register online at ${PUBLIC_WEB_URL}. Thank you for your call.`,
+          'Sveiki, čia Sanadenta. Šiuo metu nedirbame. ' +
+            'Užsiregistruoti galite mūsų interneto svetainėje. Ačiū už jūsų skambutį.',
           apiBaseUrl
         );
 
@@ -212,7 +221,7 @@ router.post('/call-received', async (req, res) => {
       if (!callId) return;
 
       if (closedCalls.has(callId)) {
-        console.log(`ℹ️ Closed-hours call established: ${callId}`);
+        console.log(`ℹ️ Skambutis ne darbo metu prijungtas: ${callId}`);
         return;
       }
 
@@ -220,9 +229,9 @@ router.post('/call-received', async (req, res) => {
 
       await sayText(
         callId,
-        'Hello, this is Sanadenta. ' +
-          'If you want us to call you back for appointment registration, press 1. ' +
-          'If you want to be connected to the administrator, press 2.',
+        'Sveiki, čia Sanadenta. ' +
+          'Jeigu norite, kad perskambintume dėl vizito registracijos, spauskite 1. ' +
+          'Jeigu norite būti sujungti su administratore, spauskite 2.',
         apiBaseUrl
       );
 
@@ -233,7 +242,7 @@ router.post('/call-received', async (req, res) => {
       if (!callId) return;
 
       if (closedCalls.has(callId)) {
-        console.log(`ℹ️ Closing call after closed-hours message: ${callId}`);
+        console.log(`ℹ️ Baigiamas skambutis po pranešimo apie ne darbo laiką: ${callId}`);
         await hangupCall(callId, apiBaseUrl);
         return;
       }
@@ -241,7 +250,7 @@ router.post('/call-received', async (req, res) => {
       const nextAction = actionAfterSay.get(callId);
 
       if (nextAction === 'hangup') {
-        console.log(`ℹ️ Hanging up after confirmation message: ${callId}`);
+        console.log(`ℹ️ Baigiamas skambutis po patvirtinimo žinutės: ${callId}`);
         actionAfterSay.delete(callId);
         menuCalls.delete(callId);
         await hangupCall(callId, apiBaseUrl);
@@ -249,11 +258,11 @@ router.post('/call-received', async (req, res) => {
       }
 
       if (nextAction === 'connectAdmin') {
-        console.log(`ℹ️ Connecting to admin after announcement: ${callId}`);
+        console.log(`ℹ️ Jungiama su administratore po pranešimo: ${callId}`);
         actionAfterSay.delete(callId);
         menuCalls.delete(callId);
 
-        console.log('📲 Creating dialog to admin:', {
+        console.log('📲 Kuriamas dialogas su administratore:', {
           callId,
           adminPhone: normalizePhone(ADMIN_PHONE),
           from: INFOBIP_VOICE_FROM,
@@ -265,7 +274,7 @@ router.post('/call-received', async (req, res) => {
       }
 
       if (menuCalls.has(callId)) {
-        console.log(`ℹ️ Starting DTMF capture after menu prompt: ${callId}`);
+        console.log(`ℹ️ Pradedamas DTMF surinkimas po meniu pranešimo: ${callId}`);
         await captureDtmf(
           callId,
           {
@@ -298,7 +307,8 @@ router.post('/call-received', async (req, res) => {
       if (timedOut || !pressed) {
         await sayText(
           callId,
-          `No option was selected. Please register online at ${PUBLIC_WEB_URL}. Thank you.`,
+          'Nepasirinkote jokio varianto. ' +
+            'Užsiregistruoti internetu galite mūsų interneto svetainėje. Ačiū.',
           apiBaseUrl
         );
 
@@ -310,11 +320,12 @@ router.post('/call-received', async (req, res) => {
       if (pressed === '1') {
         const safeFrom = normalizePhone(from || '');
 
-        await notifyAdminAboutCallback(safeFrom || 'Unknown number');
+        await notifyAdminAboutCallback(safeFrom || 'Nežinomas numeris');
 
         await sayText(
           callId,
-          'Thank you. We have recorded your callback request. We will call you back during working hours.',
+          'Ačiū. Jūsų prašymas perskambinti užregistruotas. ' +
+            'Susisieksime su jumis darbo metu.',
           apiBaseUrl
         );
 
@@ -325,7 +336,7 @@ router.post('/call-received', async (req, res) => {
       if (pressed === '2') {
         await sayText(
           callId,
-          'Connecting you to the administrator. Please wait.',
+          'Jungiame su administratore. Prašome palaukti.',
           apiBaseUrl
         );
 
@@ -335,7 +346,8 @@ router.post('/call-received', async (req, res) => {
 
       await sayText(
         callId,
-        `Invalid selection. Please visit ${PUBLIC_WEB_URL} to register online.`,
+        'Neteisingas pasirinkimas. ' +
+          'Užsiregistruoti internetu galite mūsų interneto svetainėje.',
         apiBaseUrl
       );
 
@@ -348,7 +360,8 @@ router.post('/call-received', async (req, res) => {
 
       await sayText(
         callId,
-        `No option was selected. Please register online at ${PUBLIC_WEB_URL}. Thank you.`,
+        'Nepasirinkote jokio varianto. ' +
+          'Užsiregistruoti internetu galite mūsų interneto svetainėje. Ačiū.',
         apiBaseUrl
       );
 
@@ -370,7 +383,7 @@ router.post('/call-received', async (req, res) => {
       if (parentCallId && errorName === 'NO_ANSWER') {
         await sayText(
           parentCallId,
-          'The administrator is currently unavailable. We will call you back during working hours.',
+          'Administratorė šiuo metu neatsiliepia. Mes jums perskambinsime darbo metu.',
           apiBaseUrl
         );
 
@@ -380,7 +393,7 @@ router.post('/call-received', async (req, res) => {
           '';
 
         const safeFrom = normalizePhone(parentFrom || '');
-        await notifyAdminAboutCallback(safeFrom || 'Unknown number');
+        await notifyAdminAboutCallback(safeFrom || 'Nežinomas numeris');
 
         actionAfterSay.set(parentCallId, 'hangup');
       }
@@ -406,21 +419,13 @@ router.post('/call-received', async (req, res) => {
 
     if (type === 'CALL_FAILED') {
       console.warn('CALL_FAILED:', JSON.stringify(event, null, 2));
-      if (callId) {
-        closedCalls.delete(callId);
-        menuCalls.delete(callId);
-        actionAfterSay.delete(callId);
-      }
+      cleanupCall(callId);
       return;
     }
 
     if (type === 'CALL_FINISHED') {
       console.log('CALL_FINISHED:', callId);
-      if (callId) {
-        closedCalls.delete(callId);
-        menuCalls.delete(callId);
-        actionAfterSay.delete(callId);
-      }
+      cleanupCall(callId);
       return;
     }
 
@@ -436,6 +441,8 @@ router.post('/call-received', async (req, res) => {
       console.warn(`${type}:`, JSON.stringify(event, null, 2));
       return;
     }
+
+    console.log(`ℹ️ Neapdorotas event tipas: ${type}`);
   } catch (error) {
     const status = error?.response?.status;
     const data = error?.response?.data || {};

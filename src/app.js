@@ -42,6 +42,21 @@ app.get('/', (_req, res) => {
   });
 });
 
+app.use((req, res) => {
+  res.status(404).json({ error: 'Route not found' });
+});
+
+app.use((err, req, res, next) => {
+  console.error('❌ Unhandled error:', err);
+  res.status(500).json({
+    error: 'Internal server error',
+    message:
+      process.env.NODE_ENV === 'development'
+        ? err.message
+        : 'Something went wrong',
+  });
+});
+
 testCalendarAccess().catch((err) => {
   console.error('❌ Calendar access test failed:', err?.message || err);
 });

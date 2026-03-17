@@ -18,6 +18,7 @@
     "express": "^5.2.1",
     "googleapis": "^171.4.0",
     "luxon": "^3.7.2",
+    "microsoft-cognitiveservices-speech-sdk": "^1.48.0",
     "react-day-picker": "^9.14.0"
   },
   "devDependencies": {

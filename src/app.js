@@ -1,5 +1,12 @@
 const express = require('express');
-const cors = require('cors');
+const path = require('path');
+
+const app = express();
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+app.use(express.static(path.join(process.cwd(), 'public')));
 
 const healthRoutes = require('./routes/health');
 const freeSlotsRoutes = require('./routes/freeSlots');
@@ -11,7 +18,6 @@ const availableDatesRoutes = require('./routes/availableDates');
 
 const { testCalendarAccess } = require('./services/googleCalendar');
 
-const app = express();
 
 app.use(cors({
   origin: [

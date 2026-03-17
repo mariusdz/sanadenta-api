@@ -35,12 +35,11 @@ module.exports = {
     process.env.INFOBIP_CALLS_APPLICATION_ID || '',
   INFOBIP_CALLS_CONFIGURATION_ID:
     process.env.INFOBIP_CALLS_CONFIGURATION_ID || '',
-  INFOBIP_VOICE_FROM:
-    process.env.INFOBIP_VOICE_FROM ||
-    process.env.INFOBIP_SMS_FROM ||
-    '',
+  INFOBIP_VOICE_FROM: process.env.INFOBIP_VOICE_FROM || '',
 
-  VOICE_LANGUAGE: process.env.VOICE_LANGUAGE || 'lt',
+  AZURE_SPEECH_KEY: process.env.AZURE_SPEECH_KEY || '',
+  AZURE_SPEECH_REGION: process.env.AZURE_SPEECH_REGION || '',
+  AZURE_TTS_VOICE: process.env.AZURE_TTS_VOICE || 'lt-LT-OnaNeural',
 
   ADMIN_PHONE: process.env.ADMIN_PHONE || '',
   PUBLIC_WEB_URL: process.env.PUBLIC_WEB_URL || 'https://sanadenta.lt',

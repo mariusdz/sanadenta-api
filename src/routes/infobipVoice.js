@@ -18,12 +18,11 @@ const {
 
 const { normalizePhone } = require('../utils/phone');
 const { sendInfobipSms } = require('../services/sms');
-
-const VOICE_LANGUAGE = 'lt';
+const { synthesizeTextToPublicFile } = require('../services/azureTts');
 
 const closedCalls = new Set();
 const menuCalls = new Set();
-const actionAfterSay = new Map(); // callId -> 'hangup' | 'connectAdmin'
+const actionAfterPlay = new Map(); // callId -> 'hangup' | 'connectAdmin'
 const pendingAdminDialogs = new Map(); // dialogId -> parentCallId
 
 function getInfobipClient(baseURL) {
@@ -39,11 +38,9 @@ function getInfobipClient(baseURL) {
 }
 
 // TESTUI palik true.
-// Kai baigsi testus, grąžink realų darbo laiką.
 function isWorkingHours() {
   return true;
 
-  // Realus variantas:
   // const now = DateTime.now().setZone(TIME_ZONE);
   // const weekday = now.weekday; // 1=Mon ... 7=Sun
   // const hour = now.hour;
@@ -62,29 +59,35 @@ async function answerCall(callId, apiBaseUrl) {
   return response;
 }
 
-async function sayText(callId, text, apiBaseUrl) {
+async function playAudioFromUrl(callId, fileUrl, apiBaseUrl) {
   const payload = {
-    text,
-    language: VOICE_LANGUAGE,
-    speechRate: 1.0,
-    loopCount: 1,
-    preferences: {
-      voiceGender: 'FEMALE',
-    },
+    fileUrl,
   };
 
-  console.log('SAY URL:', `${apiBaseUrl || INFOBIP_BASE_URL}/calls/1/calls/${callId}/say`);
-  console.log('SAY PAYLOAD:', JSON.stringify(payload, null, 2));
+  console.log('PLAY URL:', `${apiBaseUrl || INFOBIP_BASE_URL}/calls/1/calls/${callId}/play`);
+  console.log('PLAY PAYLOAD:', JSON.stringify(payload, null, 2));
 
   const response = await getInfobipClient(apiBaseUrl).post(
-    `/calls/1/calls/${callId}/say`,
+    `/calls/1/calls/${callId}/play`,
     payload
   );
 
-  console.log('SAY RESPONSE STATUS:', response.status);
-  console.log('SAY RESPONSE DATA:', JSON.stringify(response.data || {}, null, 2));
+  console.log('PLAY RESPONSE STATUS:', response.status);
+  console.log('PLAY RESPONSE DATA:', JSON.stringify(response.data || {}, null, 2));
 
   return response;
+}
+
+async function playLithuanianText(callId, text, cacheKey, apiBaseUrl) {
+  const { publicUrl, cached } = await synthesizeTextToPublicFile(text, cacheKey);
+
+  console.log('AUDIO READY:', {
+    cacheKey,
+    publicUrl,
+    cached,
+  });
+
+  return playAudioFromUrl(callId, publicUrl, apiBaseUrl);
 }
 
 async function captureDtmf(
@@ -210,7 +213,7 @@ function cleanupCall(callId) {
   if (!callId) return;
   closedCalls.delete(callId);
   menuCalls.delete(callId);
-  actionAfterSay.delete(callId);
+  actionAfterPlay.delete(callId);
 }
 
 router.post('/call-received', async (req, res) => {
@@ -244,9 +247,10 @@ router.post('/call-received', async (req, res) => {
       if (!isWorkingHours()) {
         closedCalls.add(callId);
 
-        await sayText(
+        await playLithuanianText(
           callId,
           'Sveiki, čia Sanadenta. Šiuo metu nedirbame. Užsiregistruoti galite mūsų interneto svetainėje. Ačiū už jūsų skambutį.',
+          'closed-hours',
           apiBaseUrl
         );
 
@@ -268,31 +272,32 @@ router.post('/call-received', async (req, res) => {
 
       menuCalls.add(callId);
 
-      await sayText(
+      await playLithuanianText(
         callId,
         'Sveiki, čia Sanadenta. Jeigu norite, kad perskambintume dėl vizito registracijos, spauskite 1. Jeigu norite būti sujungti su administratore, spauskite 2.',
+        'main-menu',
         apiBaseUrl
       );
 
       return;
     }
 
-    if (type === 'SAY_FINISHED') {
+    if (type === 'PLAY_FINISHED') {
       if (!callId) return;
 
-      console.log('SAY_FINISHED for:', callId);
+      console.log('PLAY_FINISHED for:', callId);
 
       if (closedCalls.has(callId)) {
-        console.log(`ℹ️ Baigiamas skambutis po pranešimo apie ne darbo laiką: ${callId}`);
+        console.log(`ℹ️ Baigiamas skambutis po ne darbo laiko pranešimo: ${callId}`);
         await hangupCall(callId, apiBaseUrl);
         return;
       }
 
-      const nextAction = actionAfterSay.get(callId);
+      const nextAction = actionAfterPlay.get(callId);
 
       if (nextAction === 'hangup') {
-        console.log(`ℹ️ Baigiamas skambutis po patvirtinimo žinutės: ${callId}`);
-        actionAfterSay.delete(callId);
+        console.log(`ℹ️ Baigiamas skambutis po patvirtinimo pranešimo: ${callId}`);
+        actionAfterPlay.delete(callId);
         menuCalls.delete(callId);
         await hangupCall(callId, apiBaseUrl);
         return;
@@ -300,22 +305,14 @@ router.post('/call-received', async (req, res) => {
 
       if (nextAction === 'connectAdmin') {
         console.log(`ℹ️ Jungiama su administratore po pranešimo: ${callId}`);
-        actionAfterSay.delete(callId);
+        actionAfterPlay.delete(callId);
         menuCalls.delete(callId);
-
-        console.log('📲 Kuriamas dialogas su administratore:', {
-          callId,
-          adminPhone: normalizePhone(ADMIN_PHONE),
-          from: INFOBIP_VOICE_FROM,
-          applicationId: INFOBIP_CALLS_APPLICATION_ID,
-        });
-
         await createDialogToAdmin(callId, apiBaseUrl);
         return;
       }
 
       if (menuCalls.has(callId)) {
-        console.log(`ℹ️ Pradedamas DTMF surinkimas po meniu pranešimo: ${callId}`);
+        console.log(`ℹ️ Pradedamas DTMF po pagrindinio meniu: ${callId}`);
         await captureDtmf(
           callId,
           {
@@ -346,13 +343,14 @@ router.post('/call-received', async (req, res) => {
       });
 
       if (timedOut || !pressed) {
-        await sayText(
+        await playLithuanianText(
           callId,
           'Nepasirinkote jokio varianto. Užsiregistruoti internetu galite mūsų interneto svetainėje. Ačiū.',
+          'no-selection',
           apiBaseUrl
         );
 
-        actionAfterSay.set(callId, 'hangup');
+        actionAfterPlay.set(callId, 'hangup');
         menuCalls.delete(callId);
         return;
       }
@@ -362,34 +360,37 @@ router.post('/call-received', async (req, res) => {
 
         await notifyAdminAboutCallback(safeFrom || 'Nežinomas numeris');
 
-        await sayText(
+        await playLithuanianText(
           callId,
           'Ačiū. Jūsų prašymas perskambinti užregistruotas. Susisieksime su jumis darbo metu.',
+          'callback-confirmation',
           apiBaseUrl
         );
 
-        actionAfterSay.set(callId, 'hangup');
+        actionAfterPlay.set(callId, 'hangup');
         return;
       }
 
       if (pressed === '2') {
-        await sayText(
+        await playLithuanianText(
           callId,
           'Jungiame su administratore. Prašome palaukti.',
+          'connect-admin',
           apiBaseUrl
         );
 
-        actionAfterSay.set(callId, 'connectAdmin');
+        actionAfterPlay.set(callId, 'connectAdmin');
         return;
       }
 
-      await sayText(
+      await playLithuanianText(
         callId,
         'Neteisingas pasirinkimas. Užsiregistruoti internetu galite mūsų interneto svetainėje.',
+        'invalid-selection',
         apiBaseUrl
       );
 
-      actionAfterSay.set(callId, 'hangup');
+      actionAfterPlay.set(callId, 'hangup');
       return;
     }
 
@@ -399,13 +400,14 @@ router.post('/call-received', async (req, res) => {
     ) {
       if (!callId) return;
 
-      await sayText(
+      await playLithuanianText(
         callId,
         'Nepasirinkote jokio varianto. Užsiregistruoti internetu galite mūsų interneto svetainėje. Ačiū.',
+        'dtmf-failed',
         apiBaseUrl
       );
 
-      actionAfterSay.set(callId, 'hangup');
+      actionAfterPlay.set(callId, 'hangup');
       menuCalls.delete(callId);
       return;
     }
@@ -421,9 +423,10 @@ router.post('/call-received', async (req, res) => {
       const errorName = event?.properties?.errorCode?.name;
 
       if (parentCallId && errorName === 'NO_ANSWER') {
-        await sayText(
+        await playLithuanianText(
           parentCallId,
           'Administratorė šiuo metu neatsiliepia. Mes jums perskambinsime darbo metu.',
+          'admin-no-answer',
           apiBaseUrl
         );
 
@@ -435,7 +438,7 @@ router.post('/call-received', async (req, res) => {
         const safeFrom = normalizePhone(parentFrom || '');
         await notifyAdminAboutCallback(safeFrom || 'Nežinomas numeris');
 
-        actionAfterSay.set(parentCallId, 'hangup');
+        actionAfterPlay.set(parentCallId, 'hangup');
       }
 
       if (dialogId) {
@@ -466,19 +469,6 @@ router.post('/call-received', async (req, res) => {
     if (type === 'CALL_FINISHED') {
       console.log('CALL_FINISHED:', callId);
       cleanupCall(callId);
-      return;
-    }
-
-    if (type === 'PLAY_FINISHED') {
-      console.log('PLAY_FINISHED:', callId);
-      return;
-    }
-
-    if (
-      type === 'APPLICATION_TRANSFER_FAILED' ||
-      type === 'APPLICATION_TRANSFER_FINISHED'
-    ) {
-      console.warn(`${type}:`, JSON.stringify(event, null, 2));
       return;
     }
 

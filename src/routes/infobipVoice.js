@@ -17,12 +17,12 @@ const {
 
 const { normalizePhone } = require('../utils/phone');
 const { sendInfobipSms } = require('../services/sms');
-const { synthesizeTextToPublicFile } = require('../services/azureTts');
+const { synthesizeTextToPublicFile } = require('../services/googleTts');
 
 const closedCalls = new Set();
 const menuCalls = new Set();
-const actionAfterPlay = new Map(); // callId -> 'hangup' | 'connectAdmin'
-const pendingAdminDialogs = new Map(); // dialogId -> parentCallId
+const actionAfterPlay = new Map();
+const pendingAdminDialogs = new Map();
 
 function getInfobipClient(baseURL) {
   return axios.create({
@@ -36,13 +36,11 @@ function getInfobipClient(baseURL) {
   });
 }
 
-// TESTUI palik true.
-// Kai baigsi testus, grąžink realų darbo laiką.
 function isWorkingHours() {
   return true;
 
   // const now = DateTime.now().setZone(TIME_ZONE);
-  // const weekday = now.weekday; // 1=Mon ... 7=Sun
+  // const weekday = now.weekday;
   // const hour = now.hour;
   // return weekday >= 1 && weekday <= 5 && hour >= 8 && hour < 17;
 }
@@ -274,8 +272,8 @@ router.post('/call-received', async (req, res) => {
 
       await playLithuanianText(
         callId,
-        'Sveiki, čia Sanadenta. Jeigu norite, kad perskambintume dėl vizito registracijos, spauskite 1. Jeigu norite būti sujungti su administratore, spauskite 2.',
-        'main-menu',
+        'Sveiki. Čia Sanadenta.',
+        'hello-test',
         apiBaseUrl
       );
 
@@ -288,7 +286,6 @@ router.post('/call-received', async (req, res) => {
       console.log('PLAY_FINISHED for:', callId);
 
       if (closedCalls.has(callId)) {
-        console.log(`ℹ️ Baigiamas skambutis po ne darbo laiko pranešimo: ${callId}`);
         await hangupCall(callId, apiBaseUrl);
         return;
       }
@@ -296,7 +293,6 @@ router.post('/call-received', async (req, res) => {
       const nextAction = actionAfterPlay.get(callId);
 
       if (nextAction === 'hangup') {
-        console.log(`ℹ️ Baigiamas skambutis po patvirtinimo pranešimo: ${callId}`);
         actionAfterPlay.delete(callId);
         menuCalls.delete(callId);
         await hangupCall(callId, apiBaseUrl);
@@ -304,7 +300,6 @@ router.post('/call-received', async (req, res) => {
       }
 
       if (nextAction === 'connectAdmin') {
-        console.log(`ℹ️ Jungiama su administratore po pranešimo: ${callId}`);
         actionAfterPlay.delete(callId);
         menuCalls.delete(callId);
         await createDialogToAdmin(callId, apiBaseUrl);
@@ -312,7 +307,6 @@ router.post('/call-received', async (req, res) => {
       }
 
       if (menuCalls.has(callId)) {
-        console.log(`ℹ️ Pradedamas DTMF po pagrindinio meniu: ${callId}`);
         await captureDtmf(
           callId,
           {
@@ -345,7 +339,7 @@ router.post('/call-received', async (req, res) => {
       if (timedOut || !pressed) {
         await playLithuanianText(
           callId,
-          'Nepasirinkote jokio varianto. Užsiregistruoti internetu galite mūsų interneto svetainėje. Ačiū.',
+          'Nepasirinkote jokio varianto. Ačiū.',
           'no-selection',
           apiBaseUrl
         );
@@ -362,7 +356,7 @@ router.post('/call-received', async (req, res) => {
 
         await playLithuanianText(
           callId,
-          'Ačiū. Jūsų prašymas perskambinti užregistruotas. Susisieksime su jumis darbo metu.',
+          'Ačiū. Jūsų prašymas perskambinti užregistruotas.',
           'callback-confirmation',
           apiBaseUrl
         );
@@ -374,7 +368,7 @@ router.post('/call-received', async (req, res) => {
       if (pressed === '2') {
         await playLithuanianText(
           callId,
-          'Jungiame su administratore. Prašome palaukti.',
+          'Jungiame su administratore.',
           'connect-admin',
           apiBaseUrl
         );
@@ -385,7 +379,7 @@ router.post('/call-received', async (req, res) => {
 
       await playLithuanianText(
         callId,
-        'Neteisingas pasirinkimas. Užsiregistruoti internetu galite mūsų interneto svetainėje.',
+        'Neteisingas pasirinkimas.',
         'invalid-selection',
         apiBaseUrl
       );
@@ -402,7 +396,7 @@ router.post('/call-received', async (req, res) => {
 
       await playLithuanianText(
         callId,
-        'Nepasirinkote jokio varianto. Užsiregistruoti internetu galite mūsų interneto svetainėje. Ačiū.',
+        'Nepasirinkote jokio varianto. Ačiū.',
         'dtmf-failed',
         apiBaseUrl
       );

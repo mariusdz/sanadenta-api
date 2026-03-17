@@ -37,12 +37,11 @@ module.exports = {
     process.env.INFOBIP_CALLS_CONFIGURATION_ID || '',
   INFOBIP_VOICE_FROM: process.env.INFOBIP_VOICE_FROM || '',
 
-  AZURE_SPEECH_KEY: process.env.AZURE_SPEECH_KEY || '',
-  AZURE_SPEECH_REGION: process.env.AZURE_SPEECH_REGION || '',
-  AZURE_TTS_VOICE: process.env.AZURE_TTS_VOICE || 'lt-LT-OnaNeural',
+  GOOGLE_TTS_VOICE: process.env.GOOGLE_TTS_VOICE || 'lt-LT-Standard-A',
+  GOOGLE_TTS_LANGUAGE_CODE: process.env.GOOGLE_TTS_LANGUAGE_CODE || 'lt-LT',
 
   ADMIN_PHONE: process.env.ADMIN_PHONE || '',
-  PUBLIC_WEB_URL: process.env.PUBLIC_WEB_URL || 'https://sanadenta.lt',
+  PUBLIC_WEB_URL: process.env.PUBLIC_WEB_URL || 'https://sanadenta-api.onrender.com',
 
   REMINDER_CHECK_INTERVAL_MS: Number(
     process.env.REMINDER_CHECK_INTERVAL_MS || 300000

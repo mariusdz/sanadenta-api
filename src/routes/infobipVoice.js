@@ -14,12 +14,12 @@ const {
   ADMIN_PHONE,
   PUBLIC_WEB_URL,
   TIME_ZONE,
-  VOICE_LANGUAGE,
 } = require('../config');
 
 const { normalizePhone } = require('../utils/phone');
 const { sendInfobipSms } = require('../services/sms');
 
+const VOICE_LANGUAGE = 'lt';
 
 const closedCalls = new Set();
 const menuCalls = new Set();
@@ -51,18 +51,40 @@ function isWorkingHours() {
 }
 
 async function answerCall(callId, apiBaseUrl) {
-  return getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/answer`, {});
+  const response = await getInfobipClient(apiBaseUrl).post(
+    `/calls/1/calls/${callId}/answer`,
+    {}
+  );
+
+  console.log('ANSWER RESPONSE STATUS:', response.status);
+  console.log('ANSWER RESPONSE DATA:', JSON.stringify(response.data || {}, null, 2));
+
+  return response;
 }
 
 async function sayText(callId, text, apiBaseUrl) {
   const payload = {
     text,
     language: VOICE_LANGUAGE,
+    speechRate: 1.0,
+    loopCount: 1,
+    preferences: {
+      voiceGender: 'FEMALE',
+    },
   };
 
-  console.log('SAY PAYLOAD:', JSON.stringify(payload));
+  console.log('SAY URL:', `${apiBaseUrl || INFOBIP_BASE_URL}/calls/1/calls/${callId}/say`);
+  console.log('SAY PAYLOAD:', JSON.stringify(payload, null, 2));
 
-  return getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/say`, payload);
+  const response = await getInfobipClient(apiBaseUrl).post(
+    `/calls/1/calls/${callId}/say`,
+    payload
+  );
+
+  console.log('SAY RESPONSE STATUS:', response.status);
+  console.log('SAY RESPONSE DATA:', JSON.stringify(response.data || {}, null, 2));
+
+  return response;
 }
 
 async function captureDtmf(
@@ -80,16 +102,30 @@ async function captureDtmf(
     terminator,
   };
 
-  console.log('DTMF PAYLOAD:', JSON.stringify(payload));
+  console.log('DTMF URL:', `${apiBaseUrl || INFOBIP_BASE_URL}/calls/1/calls/${callId}/capture/dtmf`);
+  console.log('DTMF PAYLOAD:', JSON.stringify(payload, null, 2));
 
-  return getInfobipClient(apiBaseUrl).post(
+  const response = await getInfobipClient(apiBaseUrl).post(
     `/calls/1/calls/${callId}/capture/dtmf`,
     payload
   );
+
+  console.log('DTMF RESPONSE STATUS:', response.status);
+  console.log('DTMF RESPONSE DATA:', JSON.stringify(response.data || {}, null, 2));
+
+  return response;
 }
 
 async function hangupCall(callId, apiBaseUrl) {
-  return getInfobipClient(apiBaseUrl).post(`/calls/1/calls/${callId}/hangup`, {});
+  const response = await getInfobipClient(apiBaseUrl).post(
+    `/calls/1/calls/${callId}/hangup`,
+    {}
+  );
+
+  console.log('HANGUP RESPONSE STATUS:', response.status);
+  console.log('HANGUP RESPONSE DATA:', JSON.stringify(response.data || {}, null, 2));
+
+  return response;
 }
 
 async function createDialogToAdmin(parentCallId, apiBaseUrl) {
@@ -114,9 +150,13 @@ async function createDialogToAdmin(parentCallId, apiBaseUrl) {
     },
   };
 
-  console.log('DIALOG PAYLOAD:', JSON.stringify(payload));
+  console.log('DIALOG URL:', `${apiBaseUrl || INFOBIP_BASE_URL}/calls/1/dialogs`);
+  console.log('DIALOG PAYLOAD:', JSON.stringify(payload, null, 2));
 
   const response = await getInfobipClient(apiBaseUrl).post('/calls/1/dialogs', payload);
+
+  console.log('DIALOG RESPONSE STATUS:', response.status);
+  console.log('DIALOG RESPONSE DATA:', JSON.stringify(response.data || {}, null, 2));
 
   const dialogId = response?.data?.id || response?.data?.dialogId;
   if (dialogId) {
@@ -206,8 +246,7 @@ router.post('/call-received', async (req, res) => {
 
         await sayText(
           callId,
-          'Sveiki, čia Sanadenta. Šiuo metu nedirbame. ' +
-            'Užsiregistruoti galite mūsų interneto svetainėje. Ačiū už jūsų skambutį.',
+          'Sveiki, čia Sanadenta. Šiuo metu nedirbame. Užsiregistruoti galite mūsų interneto svetainėje. Ačiū už jūsų skambutį.',
           apiBaseUrl
         );
 
@@ -220,6 +259,8 @@ router.post('/call-received', async (req, res) => {
     if (type === 'CALL_ESTABLISHED') {
       if (!callId) return;
 
+      console.log('CALL_ESTABLISHED received for:', callId);
+
       if (closedCalls.has(callId)) {
         console.log(`ℹ️ Skambutis ne darbo metu prijungtas: ${callId}`);
         return;
@@ -229,9 +270,7 @@ router.post('/call-received', async (req, res) => {
 
       await sayText(
         callId,
-        'Sveiki, čia Sanadenta. ' +
-          'Jeigu norite, kad perskambintume dėl vizito registracijos, spauskite 1. ' +
-          'Jeigu norite būti sujungti su administratore, spauskite 2.',
+        'Sveiki, čia Sanadenta. Jeigu norite, kad perskambintume dėl vizito registracijos, spauskite 1. Jeigu norite būti sujungti su administratore, spauskite 2.',
         apiBaseUrl
       );
 
@@ -240,6 +279,8 @@ router.post('/call-received', async (req, res) => {
 
     if (type === 'SAY_FINISHED') {
       if (!callId) return;
+
+      console.log('SAY_FINISHED for:', callId);
 
       if (closedCalls.has(callId)) {
         console.log(`ℹ️ Baigiamas skambutis po pranešimo apie ne darbo laiką: ${callId}`);
@@ -290,13 +331,13 @@ router.post('/call-received', async (req, res) => {
       return;
     }
 
-    if (type === 'DTMF_CAPTURED') {
+    if (type === 'DTMF_COLLECTED') {
       if (!callId) return;
 
       const pressed = String(digits || '').trim();
       const timedOut = Boolean(event?.properties?.timeout);
 
-      console.log('DTMF HANDLER:', {
+      console.log('DTMF_COLLECTED HANDLER:', {
         pressed,
         timedOut,
         rawDigits: digits,
@@ -307,8 +348,7 @@ router.post('/call-received', async (req, res) => {
       if (timedOut || !pressed) {
         await sayText(
           callId,
-          'Nepasirinkote jokio varianto. ' +
-            'Užsiregistruoti internetu galite mūsų interneto svetainėje. Ačiū.',
+          'Nepasirinkote jokio varianto. Užsiregistruoti internetu galite mūsų interneto svetainėje. Ačiū.',
           apiBaseUrl
         );
 
@@ -324,8 +364,7 @@ router.post('/call-received', async (req, res) => {
 
         await sayText(
           callId,
-          'Ačiū. Jūsų prašymas perskambinti užregistruotas. ' +
-            'Susisieksime su jumis darbo metu.',
+          'Ačiū. Jūsų prašymas perskambinti užregistruotas. Susisieksime su jumis darbo metu.',
           apiBaseUrl
         );
 
@@ -346,8 +385,7 @@ router.post('/call-received', async (req, res) => {
 
       await sayText(
         callId,
-        'Neteisingas pasirinkimas. ' +
-          'Užsiregistruoti internetu galite mūsų interneto svetainėje.',
+        'Neteisingas pasirinkimas. Užsiregistruoti internetu galite mūsų interneto svetainėje.',
         apiBaseUrl
       );
 
@@ -355,13 +393,15 @@ router.post('/call-received', async (req, res) => {
       return;
     }
 
-    if (type === 'DTMF_CAPTURE_FAILED') {
+    if (
+      type === 'DTMF_CAPTURE_FAILED' ||
+      type === 'DTMF_COLLECTION_FAILED'
+    ) {
       if (!callId) return;
 
       await sayText(
         callId,
-        'Nepasirinkote jokio varianto. ' +
-          'Užsiregistruoti internetu galite mūsų interneto svetainėje. Ačiū.',
+        'Nepasirinkote jokio varianto. Užsiregistruoti internetu galite mūsų interneto svetainėje. Ačiū.',
         apiBaseUrl
       );
 
@@ -371,7 +411,7 @@ router.post('/call-received', async (req, res) => {
     }
 
     if (type === 'DIALOG_FAILED') {
-      console.warn(`📟 DIALOG_FAILED:`, JSON.stringify(event, null, 2));
+      console.warn('📟 DIALOG_FAILED:', JSON.stringify(event, null, 2));
 
       const dialogId = event?.dialogId || event?.properties?.dialog?.id;
       const parentCallId =

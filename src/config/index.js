@@ -40,7 +40,7 @@ module.exports = {
     process.env.INFOBIP_SMS_FROM ||
     '',
 
-  VOICE_LANGUAGE: process.env.VOICE_LANGUAGE || 'lt-LT',
+  VOICE_LANGUAGE: process.env.VOICE_LANGUAGE || 'lt',
 
   ADMIN_PHONE: process.env.ADMIN_PHONE || '',
   PUBLIC_WEB_URL: process.env.PUBLIC_WEB_URL || 'https://sanadenta.lt',

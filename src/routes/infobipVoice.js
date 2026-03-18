@@ -21,8 +21,8 @@ const { synthesizeTextToPublicFile } = require('../services/googleTts');
 
 const closedCalls = new Set();
 const menuCalls = new Set();
-const actionAfterPlay = new Map();
-const pendingAdminDialogs = new Map();
+const actionAfterPlay = new Map(); // callId -> 'hangup' | 'connectAdmin'
+const pendingAdminDialogs = new Map(); // dialogId -> parentCallId
 
 function getInfobipClient(baseURL) {
   return axios.create({
@@ -39,8 +39,9 @@ function getInfobipClient(baseURL) {
 function isWorkingHours() {
   return true;
 
+  // Realus variantas:
   // const now = DateTime.now().setZone(TIME_ZONE);
-  // const weekday = now.weekday;
+  // const weekday = now.weekday; // 1=Mon ... 7=Sun
   // const hour = now.hour;
   // return weekday >= 1 && weekday <= 5 && hour >= 8 && hour < 17;
 }
@@ -96,7 +97,7 @@ async function captureDtmf(
   callId,
   {
     maxLength = 1,
-    timeout = 8,
+    timeout = 10,
     terminator = '#',
   } = {},
   apiBaseUrl
@@ -274,8 +275,8 @@ router.post('/call-received', async (req, res) => {
 
       await playLithuanianText(
         callId,
-        'Sveiki. Čia Sanadenta.',
-        'hello-test',
+        'Sveiki, čia Sanadenta. Jeigu norite, kad perskambintume dėl vizito registracijos, spauskite 1. Jeigu norite būti sujungti su administratore, spauskite 2.',
+        'main-menu',
         apiBaseUrl
       );
 
@@ -313,7 +314,7 @@ router.post('/call-received', async (req, res) => {
           callId,
           {
             maxLength: 1,
-            timeout: 8,
+            timeout: 10,
             terminator: '#',
           },
           apiBaseUrl
@@ -324,13 +325,16 @@ router.post('/call-received', async (req, res) => {
       return;
     }
 
-    if (type === 'DTMF_COLLECTED') {
+    if (type === 'DTMF_COLLECTED' || type === 'DTMF_CAPTURED') {
       if (!callId) return;
 
       const pressed = String(digits || '').trim();
-      const timedOut = Boolean(event?.properties?.timeout);
+      const timedOut = Boolean(
+        event?.properties?.timeout ||
+        event?.timeout
+      );
 
-      console.log('DTMF_COLLECTED HANDLER:', {
+      console.log('DTMF HANDLER:', {
         pressed,
         timedOut,
         rawDigits: digits,
@@ -358,7 +362,7 @@ router.post('/call-received', async (req, res) => {
 
         await playLithuanianText(
           callId,
-          'Ačiū. Jūsų prašymas perskambinti užregistruotas.',
+          'Ačiū. Jūsų prašymas perskambinti užregistruotas. Susisieksime su jumis darbo metu.',
           'callback-confirmation',
           apiBaseUrl
         );
@@ -370,7 +374,7 @@ router.post('/call-received', async (req, res) => {
       if (pressed === '2') {
         await playLithuanianText(
           callId,
-          'Jungiame su administratore.',
+          'Jungiame su administratore. Prašome palaukti.',
           'connect-admin',
           apiBaseUrl
         );

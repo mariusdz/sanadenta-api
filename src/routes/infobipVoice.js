@@ -61,8 +61,7 @@ async function playAudioFromUrl(callId, fileUrl, apiBaseUrl) {
   const payload = {
     loopCount: 1,
     content: {
-      type: 'URL',
-      url: fileUrl,
+      fileUrl,
     },
   };
 

@@ -32,6 +32,16 @@ const {
 
 const requireApiKey = require('../middleware/apiKey');
 
+router.get('/', async (req, res) => {
+  console.log('📥 FREE-SLOTS REQUEST', {
+    query: req.query,
+    origin: req.headers.origin || null,
+    method: req.method,
+  });
+
+  // toliau tavo kodas
+
+
 router.get('/', requireApiKey, async (req, res) => {
   try {
     const { date, service, durationMinutes } = req.query;
@@ -180,6 +190,7 @@ router.get('/', requireApiKey, async (req, res) => {
       details: process.env.NODE_ENV === 'development' ? error.stack : undefined,
     });
   }
+});
 });
 
 module.exports = router;
